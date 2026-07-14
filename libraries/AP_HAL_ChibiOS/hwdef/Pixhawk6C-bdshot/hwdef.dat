@@ -1,3 +1,16 @@
+#------------------------------------------------
+# External AHRS - OSCP IMU
+#------------------------------------------------
+define AP_EXTERNAL_AHRS_ENABLED 1
+define AP_EXTERNAL_AHRS_BACKEND_DEFAULT_ENABLED 1
+define AP_EXTERNAL_AHRS_OSCP_ENABLED 1
+define AP_AHRS_ENABLED 1
+define HAL_EXTERNAL_AHRS_DEFAULT 15
+
+# EKF3 & External Navigation Support
+define HAL_NAVEKF3_AVAILABLE 1
+define EK3_FEATURE_EXTERNAL_NAV 1
+
 # hw definition file for processing by chibios_hwdef.py
 # for the HolybroV6C hardware bdshot version
 

@@ -29,6 +29,7 @@
 #include "AP_ExternalAHRS_SBG.h"
 #include "AP_ExternalAHRS_GSOF.h"
 #include "AP_ExternalAHRS_SensAItion.h"
+#include "AP_ExternalAHRS_OSCP.h"
 
 #include <GCS_MAVLink/GCS.h>
 #include <AP_AHRS/AP_AHRS.h>
@@ -150,6 +151,11 @@ void AP_ExternalAHRS::init(void)
         return;
 #endif // AP_EXTERNAL_AHRS_SBG_ENABLED
 
+#if AP_EXTERNAL_AHRS_OSCP_ENABLED
+    case DevType::OSCP:
+        backend = NEW_NOTHROW AP_ExternalAHRS_OSCP(this, state);
+        return;
+#endif // AP_EXTERNAL_AHRS_OSCP_ENABLED
     }
 
     GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Unsupported ExternalAHRS type %u", unsigned(devtype));

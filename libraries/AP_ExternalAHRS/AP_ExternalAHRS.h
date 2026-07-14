@@ -37,6 +37,7 @@ public:
     friend class AP_ExternalAHRS_SBG;
     friend class AP_ExternalAHRS_VectorNav;
     friend class AP_ExternalAHRS_SensAItion;
+    friend class AP_ExternalAHRS_OSCP;
 
     AP_ExternalAHRS();
 
@@ -71,6 +72,9 @@ public:
         // 10 reserved for Aeron
 #if AP_EXTERNAL_AHRS_SENSAITION_ENABLED
         SensAItion = 11,
+#endif
+#if AP_EXTERNAL_AHRS_OSCP_ENABLED
+        OSCP = 15,
 #endif
     };
 

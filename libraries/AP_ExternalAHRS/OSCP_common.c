@@ -24,7 +24,7 @@ SOFTWARE.
 */
 
 #include <stdlib.h>
-#include "cobs.h"
+#include "OSCP_common.h"
 
 /*****************************************************************************
  * Defines

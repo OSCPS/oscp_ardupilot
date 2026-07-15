@@ -19,7 +19,7 @@
 #if AP_EXTERNAL_AHRS_OSCP_ENABLED
 
 #include "AP_ExternalAHRS_OSCP.h"
-#include "cobs.h"
+#include "OSCP_common.h"
 #include <AP_SerialManager/AP_SerialManager.h>
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Math/AP_Math.h>

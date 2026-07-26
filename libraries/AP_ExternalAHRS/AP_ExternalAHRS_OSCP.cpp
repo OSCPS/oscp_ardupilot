@@ -34,32 +34,24 @@
 
 extern const AP_HAL::HAL& hal;
 
-AP_ExternalAHRS_OSCP::AP_ExternalAHRS_OSCP(AP_ExternalAHRS* _frontend, AP_ExternalAHRS::state_t& _state) : AP_ExternalAHRS_backend(_frontend, _state) {
-    auto& sm = AP::serialmanager();
+AP_ExternalAHRS_OSCP::AP_ExternalAHRS_OSCP(AP_ExternalAHRS* _frontend, AP_ExternalAHRS::state_t& _state) :
+    AP_ExternalAHRS_backend(_frontend, _state)
+{
+    auto &sm = AP::serialmanager();
     uart = sm.find_serial(AP_SerialManager::SerialProtocol_AHRS, 0);
-    if (uart != nullptr) {
-        send_cobs_command("CONFIG\r\n");
-        hal.scheduler->delay(50);
-
-        send_cobs_command("OMM\r\n");
-        hal.scheduler->delay(50);
-
-        send_cobs_command("SUF\r\n");
-        hal.scheduler->delay(50);
-
-        send_cobs_command("EXIT\r\n");
-        hal.scheduler->delay(50);
-
-        setup_complete = true;
+    if (uart == nullptr) {
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "OSCP: No SERIALx_PROTOCOL=36 Port Found");
+        return;
     }
-
-    set_default_sensors(uint16_t(AP_ExternalAHRS::AvailableSensor::IMU));
-    set_default_sensors(uint16_t(AP_ExternalAHRS::AvailableSensor::COMPASS));
 
     baudrate = sm.find_baudrate(AP_SerialManager::SerialProtocol_AHRS, 0);
     port_num = sm.find_portnum(AP_SerialManager::SerialProtocol_AHRS, 0);
 
-    if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_ExternalAHRS_OSCP::update_thread, void), "AHRS", 2048, AP_HAL::Scheduler::PRIORITY_SPI, 0)) {
+    set_default_sensors(uint16_t(AP_ExternalAHRS::AvailableSensor::IMU) |
+                        uint16_t(AP_ExternalAHRS::AvailableSensor::COMPASS));
+
+    if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_ExternalAHRS_OSCP::update_thread, void),
+                                      "AHRS", 2048, AP_HAL::Scheduler::PRIORITY_SPI, 0)) {
         AP_HAL::panic("OSCP Failed to start ExternalAHRS update thread");
     }
 }
@@ -152,45 +144,78 @@ void AP_ExternalAHRS_OSCP::send_cobs_command(const char *cmd) {
     uart->write(enc, enc_len);
 }
 
-void AP_ExternalAHRS_OSCP::update_thread(void) {
-    while (!setup_complete) {
-        hal.scheduler->delay(1);
-    }
+void AP_ExternalAHRS_OSCP::update_thread(void)
+{
     uart->begin(baudrate);
 
-    oscp_parser_t parser = { 0 };
+    hal.scheduler->delay(600); //OSCP IMU Power-On Time = 500 ms @ 𝑇𝑐 = +25°C
+
+    oscp_parser_t parser;
     oscp_parser_init(&parser);
 
-    while (1) {
+    while (true) {
         uint8_t buf[OSCP_FRAME_MAX_LEN];
         uint32_t n = uart->available();
-
         n = MIN(n, sizeof(buf));
 
-        uint32_t bytes_read = uart->read(buf, n);
-
+        const uint32_t bytes_read = uart->read(buf, n);
         if (bytes_read > 0) {
             oscp_parser_feed_buf(&parser, buf, bytes_read);
         } else {
             hal.scheduler->delay(1);
         }
+
+        configure_oscp_imu_rate();
     }
+}
+
+void AP_ExternalAHRS_OSCP::configure_oscp_imu_rate(void)
+{
+    const uint32_t now = AP_HAL::millis();
+    const bool incoming_bytes = (last_frame_ms != 0) && ((now - last_frame_ms) < 200);
+
+    if (incoming_bytes && last_op_mode == oscp_operating_mode_t::OSCP_OP_MODE_MEDIUM) {
+        if (!setup_complete) {
+            setup_complete = true;
+            GCS_SEND_TEXT(MAV_SEVERITY_INFO, "OSCP: Medium mode (OMM: 500Hz) confirmed");
+        }
+        return;
+    }
+
+    //Retry Again In 1 Second
+    if ((now - last_config_ms) < 1000) {
+        return;
+    }
+
+    last_config_ms = now;
+
+    send_cobs_command("CONFIG\r\n");
+    hal.scheduler->delay(50);
+    
+    send_cobs_command("OMM\r\n");
+    hal.scheduler->delay(50);
+    
+    send_cobs_command("DOFTE\r\n");
+    hal.scheduler->delay(50);
+        
+    send_cobs_command("DOFTQ\r\n");
+    hal.scheduler->delay(50);
+        
+    send_cobs_command("DOFTM\r\n");
+    hal.scheduler->delay(50);
+
+    send_cobs_command("SUF\r\n");
+    hal.scheduler->delay(50);
+    
+    send_cobs_command("EXIT\r\n");
+
 }
 
 void AP_ExternalAHRS_OSCP::get_filter_status(nav_filter_status &status) const {
     memset(&status, 0, sizeof(status));
     status.flags.initalized = initialised();
     if (healthy()) {
-        status.flags.attitude           = true;
-        status.flags.vert_pos           = true;
-        status.flags.horiz_vel          = true;
-        status.flags.vert_vel           = true;
-        status.flags.horiz_pos_rel      = true;
-        status.flags.horiz_pos_abs      = true;
-        status.flags.vert_pos           = true;
-        status.flags.pred_horiz_pos_rel = true;
-        status.flags.pred_horiz_pos_abs = true;
-        status.flags.using_gps          = true;
+        status.flags.attitude = true;
     }
 }
 
@@ -238,15 +263,18 @@ void AP_ExternalAHRS_OSCP::parser_buffer(oscp_parser_t* _parser) {
     }
 
     const uint8_t frame_type = decode[0] & 0x07u;
-    if (frame_type > 7 || dec_len != OSCP_FRAME_LEN[frame_type]) {
-        _parser->stats.framing_errors++;
-        return;
-    }
+        if (frame_type > 7 || dec_len != OSCP_FRAME_LEN[frame_type]) {
+            _parser->stats.framing_errors++;
+            return;
+        }
 
     if (!crc_check(decode, dec_len)) {
-        _parser->stats.crc_errors++;
-        return;
-    }
+            _parser->stats.crc_errors++;
+            return;
+        }
+
+    last_op_mode = get_operating_mode(decode[0]);
+    last_frame_ms = AP_HAL::millis();
 
     oscp_frame_t frame;
     memset(&frame, 0, sizeof(frame));
@@ -313,10 +341,13 @@ void AP_ExternalAHRS_OSCP::decode_raw(oscp_frame_t *frame, const uint8_t *data) 
     const oscp_raw_t *raw = &frame->content.raw;
 
     if (raw->status != OSCP_STATUS_OK) {
-        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Startup status error 0x%02X", (unsigned)raw->status);
-        setup_complete = false;
-        return;
-    }
+            const uint32_t now = AP_HAL::millis();
+            if ((now - last_status_warn_ms) > 5000) {
+                last_status_warn_ms = now;
+                GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "OSCP: status 0x%02X", (unsigned)raw->status);
+            }
+            return;
+        }
 
     last_raw_pkt = AP_HAL::millis();
 

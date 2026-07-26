@@ -30,7 +30,6 @@ public:
     const char* get_name(void) const override;
     bool healthy(void) const override;
     bool initialised(void) const override;
-    bool initialize(void);
     void update() override {}
     void update_thread();
     bool pre_arm_check(char *failure_msg, uint8_t failure_msg_len) const override;
@@ -93,6 +92,13 @@ private:
     OSCP_OP_MODE_LOW    = 0x01,
     OSCP_OP_MODE_MEDIUM = 0x02,
     };
+
+    //Output Data Rate Configuration
+    uint32_t last_config_ms = 0;        // Last Command Sent
+    uint32_t last_frame_ms = 0;         // Last CRC-Check Frame 
+    uint32_t last_status_warn_ms = 0;   // Rate Limiter For Status Byte Warning(s)
+    oscp_operating_mode_t last_op_mode = oscp_operating_mode_t::OSCP_OP_MODE_IDLE; //Starting Point Reference = No Frame
+    void configure_oscp_imu_rate(void);
 
     //Misalignment Correction
     enum class oscp_misalignment_corr_t : uint8_t {

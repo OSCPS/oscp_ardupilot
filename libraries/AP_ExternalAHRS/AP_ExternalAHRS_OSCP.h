@@ -39,25 +39,25 @@ public:
 
 private:
 
-    //Initalization Parameters
+    // Initalization Parameters
     bool setup_complete = false;
     AP_HAL::UARTDriver *uart = nullptr;
     int8_t port_num = 0;
     uint32_t baudrate = 0;
     
-    //ASCII Device Print
+    // ASCII Device Print
     char mark_number[11] = {};
     char oscp_device_name[32] = {};
     
-    //Raw IMU Timer
+    // Raw IMU Timer
     uint32_t last_raw_pkt = 0;
 
-    //Constants
+    // Constants
     static constexpr uint32_t OSCP_BAUD_RATE = 921600U; //FC Dependant
     static constexpr uint8_t OSCP_FRAME_DELIM = 0x00U;
     static constexpr uint8_t OSCP_FRAME_MAX_LEN = 72U; 
 
-    //Status Btye Masks
+    // Status Btye Masks
     static constexpr uint8_t OSCP_STATUS_OK             = 0x00U; // No bits are set
     static constexpr uint8_t OSCP_STATUS_OVERRUN        = 0x01U; // IMU Real Time Controller Overrun
     static constexpr uint8_t OSCP_STATUS_MEMS_ERR       = 0x02U; // MEMS Sensors Error
@@ -66,7 +66,7 @@ private:
     static constexpr uint8_t OSCP_STATUS_TEMP_ERR       = 0x10U; // Temperature Sensor Error
     static constexpr uint8_t OSCP_STATUS_OG_ERR         = 0x40U; // Optical Gyroscope Error
 
-    //Enable Frames Mask
+    // Enable Frames Mask
     static constexpr uint8_t OSCP_ENABLE_RAW         = 0x01U;
     static constexpr uint8_t OSCP_ENABLE_EULER       = 0x02U;
     static constexpr uint8_t OSCP_ENABLE_QUAT        = 0x04U;
@@ -75,31 +75,31 @@ private:
     static const uint8_t OSCP_FRAME_LEN[8];
     static const uint16_t CRC_LUT[256];
 
-    //Frame Types
+    // Frame Types
     enum class oscp_frame_type_t : uint8_t {
-    OSCP_FRAME_RAW          = 0x00, // Raw Operating Frame
-    OSCP_FRAME_EULER        = 0x01, // AHRS Euler Angles Operating Frame
-    OSCP_FRAME_QUATERNION   = 0x02, // AHRS Quaternions Operating Frame
-    OSCP_FRAME_ROT_MATRIX   = 0x03, // AHRS Rotation Matrix Operating Frame
-    OSCP_FRAME_DEBUG1       = 0x05, // Debug Operating Frame 1
-    OSCP_FRAME_DEBUG2       = 0x06, // Debug Operating Frame 2
-    OSCP_FRAME_STARTUP      = 0x07, // Startup Frame
+        OSCP_FRAME_RAW          = 0x00, // Raw Operating Frame
+        OSCP_FRAME_EULER        = 0x01, // AHRS Euler Angles Operating Frame
+        OSCP_FRAME_QUATERNION   = 0x02, // AHRS Quaternions Operating Frame
+        OSCP_FRAME_ROT_MATRIX   = 0x03, // AHRS Rotation Matrix Operating Frame
+        OSCP_FRAME_DEBUG1       = 0x05, // Debug Operating Frame 1
+        OSCP_FRAME_DEBUG2       = 0x06, // Debug Operating Frame 2
+        OSCP_FRAME_STARTUP      = 0x07, // Startup Frame
     };
     
-    //Operating Modes
+    // Operating Modes
     enum class oscp_operating_mode_t : uint8_t {
-    OSCP_OP_MODE_IDLE   = 0x00,
-    OSCP_OP_MODE_LOW    = 0x01,
-    OSCP_OP_MODE_MEDIUM = 0x02,
+        OSCP_OP_MODE_IDLE   = 0x00,
+        OSCP_OP_MODE_LOW    = 0x01,
+        OSCP_OP_MODE_MEDIUM = 0x02,
     };
 
-    //Misalignment Correction
+    // Misalignment Correction
     enum class oscp_misalignment_corr_t : uint8_t {
         OSCP_MISALIGNMENT_CORR_DISABLED = 0x00,
         OSCP_MISALIGNMENT_CORR_ENABLED = 0x01,
     };
 
-    // /Accessors for the Header Byte
+    // Accessors for the Header Byte
     inline oscp_frame_type_t get_frame_type(uint8_t hdr_byte) const {
         return (oscp_frame_type_t)(hdr_byte & 0x07U);
     };
@@ -112,7 +112,7 @@ private:
         return (oscp_misalignment_corr_t)((hdr_byte >> 6) & 0x03U);
     };
 
-    //Raw Operating Frame - 61 Bytes Decoded
+    // Raw Operating Frame - 61 Bytes Decoded
     struct PACKED oscp_raw_t {
         uint8_t header_byte; // Misalignment Correction (2B) - Operating Mode (2B) - Frame Type (3B) 
         uint8_t counter;        // Wrapping frame counter [0,255] 
@@ -133,7 +133,7 @@ private:
         uint16_t crc;   // Checksum 
     };  
 
-    //Euler Anlges Frame - 25 Bytes Decoded
+    // Euler Anlges Frame - 25 Bytes Decoded
     struct PACKED oscp_euler_t {
         uint8_t header_byte; // Misalignment Correction (2B) - Operating Mode (2B) - Frame Type (3B) 
         uint8_t counter;        // Wrapping frame counter [0,255] 
@@ -145,7 +145,7 @@ private:
         uint16_t crc;   // Checksum
     };
     
-    //Quaternion Frame - 29 Bytes Decoded
+    // Quaternion Frame - 29 Bytes Decoded
     struct PACKED oscp_quat_t {
         uint8_t header_byte; // Misalignment Correction (2b) - Operating Mode (2b) - Frame Type (3b)
         uint8_t counter;        // Wrapping frame counter [0,255] 
@@ -158,7 +158,7 @@ private:
         uint16_t crc;   // Checksum 
     };
     
-    //Rotation Matrix Frame - 49 Bytes Decoded
+    // Rotation Matrix Frame - 49 Bytes Decoded
     struct PACKED oscp_rot_mat_t {
         uint8_t header_byte; // Misalignment Correction (2b) - Operating Mode (2b) - Frame Type (3b)
         uint8_t counter;        // Wrapping frame counter [0,255] 
@@ -168,7 +168,7 @@ private:
         uint16_t crc;   // Checksum data 
     };
     
-    //Startup Frame - 40 bytes decoded
+    // Startup Frame - 40 bytes decoded
     struct PACKED oscp_startup_t {
         uint8_t header_byte; // Misalignment Correction (2b) - Operating Mode (2b) - Frame Type (3b) 
         char mark_number[10];
@@ -196,7 +196,7 @@ private:
         uint16_t crc;   // Checksum
     };
     
-    //Tagged Union for Handling Frame Callback 
+    // Tagged Union for Handling Frame Callback 
     struct oscp_frame_t {
         oscp_frame_type_t type;
         
@@ -209,7 +209,7 @@ private:
         } content;
     };
     
-    //Parser Statistics
+    // Parser Statistics
     struct oscp_stats_t {
         uint32_t frames_ok;     // Number of frames successfully parsed
         uint32_t framing_errors; // Number of frames dropped due to framing errors
@@ -225,14 +225,13 @@ private:
         oscp_stats_t stats;
     };
 
-    // OSCP IMU Configuration    
+    // IMU Configuration    
     uint32_t last_frame_ms = 0;         // Last CRC-Check Frame 
     uint32_t last_status_warn_ms = 0;   // Rate Limiter For Status Byte Warning(s)
     oscp_operating_mode_t last_op_mode = oscp_operating_mode_t::OSCP_OP_MODE_IDLE; //Starting Point Reference = No Frame
     void configure_oscp_imu(oscp_parser_t &parser);
-    void read_uart(oscp_parser_t &parser);
 
-    //Accessors
+    // Accessors
     inline oscp_raw_t&     oscp_raw(oscp_frame_t *frame)     { return frame->content.raw; }
     inline oscp_euler_t&   oscp_euler(oscp_frame_t *frame)   { return frame->content.euler; }
     inline oscp_quat_t&    oscp_quat(oscp_frame_t *frame)    { return frame->content.quat; }
@@ -245,31 +244,31 @@ private:
     inline const oscp_rot_mat_t& oscp_rot_mat(const oscp_frame_t &frame) { return frame.content.rot_mat; }
     inline const oscp_startup_t& oscp_startup(const oscp_frame_t &frame) { return frame.content.startup; }
 
-    //Return Codes
+    // Return Codes
     enum class oscp_err_t : int8_t {
         OSCP_OK         = 0,
         OSCP_ERR        = -1,
         OSCP_ERR_NULL   = -2,
     };
 
-    //CRC Implementation
+    // Utilities
+    void read_uart(oscp_parser_t &parser);
+    void send_cobs_command(const char *cmd);
+
+    // CRC Implementation
     uint16_t oscp_crc16(const uint8_t *data, size_t len);
     bool crc_check(const uint8_t *frame, size_t len);
 
-
-    //IMU Encoding/Decoding
+    // COBS Encoding/Decoding
     oscp_err_t oscp_cobs_decode(const uint8_t *data, size_t data_len, uint8_t *dec, size_t dec_max_len, size_t *dec_len);
     oscp_err_t oscp_cobs_encode(const uint8_t *data, size_t data_len, uint8_t *enc, size_t enc_max_len, size_t *enc_len); 
     
-    //IMU Operating State
-    void send_cobs_command(const char *cmd);
-
-    //Parse Decoding
+    // Parser Decoding
     void decode_raw(oscp_frame_t *frame, const uint8_t *data);
     void decode_quat(oscp_frame_t *frame, const uint8_t *data);
     void decode_startup(oscp_frame_t *frame, const uint8_t *data); 
 
-    //IMU parser functions
+    // Parser functions
     static void oscp_parser_init(oscp_parser_t *parser);
     void oscp_parser_reset(oscp_parser_t *parser);
     void oscp_parser_go(oscp_parser_t *parser);

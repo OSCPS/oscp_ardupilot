@@ -93,13 +93,6 @@ private:
     OSCP_OP_MODE_MEDIUM = 0x02,
     };
 
-    //Output Data Rate Configuration
-    uint32_t last_config_ms = 0;        // Last Command Sent
-    uint32_t last_frame_ms = 0;         // Last CRC-Check Frame 
-    uint32_t last_status_warn_ms = 0;   // Rate Limiter For Status Byte Warning(s)
-    oscp_operating_mode_t last_op_mode = oscp_operating_mode_t::OSCP_OP_MODE_IDLE; //Starting Point Reference = No Frame
-    void configure_oscp_imu_rate(void);
-
     //Misalignment Correction
     enum class oscp_misalignment_corr_t : uint8_t {
         OSCP_MISALIGNMENT_CORR_DISABLED = 0x00,
@@ -231,6 +224,13 @@ private:
         bool synced;
         oscp_stats_t stats;
     };
+
+    // OSCP IMU Configuration    
+    uint32_t last_frame_ms = 0;         // Last CRC-Check Frame 
+    uint32_t last_status_warn_ms = 0;   // Rate Limiter For Status Byte Warning(s)
+    oscp_operating_mode_t last_op_mode = oscp_operating_mode_t::OSCP_OP_MODE_IDLE; //Starting Point Reference = No Frame
+    void configure_oscp_imu(oscp_parser_t &parser);
+    void read_uart(oscp_parser_t &parser);
 
     //Accessors
     inline oscp_raw_t&     oscp_raw(oscp_frame_t *frame)     { return frame->content.raw; }

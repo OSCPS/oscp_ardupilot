@@ -143,8 +143,7 @@ void AP_ExternalAHRS_OSCP::send_cobs_command(const char *cmd) {
     uart->write(enc, enc_len);
 }
 
-void AP_ExternalAHRS_OSCP::update_thread(void)
-{
+void AP_ExternalAHRS_OSCP::update_thread(void) {
     uart->begin(baudrate);
  
     hal.scheduler->delay(600); //OSCP IMU Power-On Time = 500 ms @ Tc = +25degC
@@ -155,6 +154,13 @@ void AP_ExternalAHRS_OSCP::update_thread(void)
  
     while (true) {
         read_uart(parser);
+
+        /* For IMU recovery after power cycling */
+        const uint32_t now = AP_HAL::millis();
+        if ((last_frame_ms != 0) && ((now - last_frame_ms) < 50) && last_op_mode != oscp_operating_mode_t::OSCP_OP_MODE_MEDIUM) {
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "OSCP: Recovering IMU to Medium (OMM: 500Hz) Recovery!");
+            configure_oscp_imu(parser);
+        }
     }
 }
  
@@ -204,14 +210,14 @@ void AP_ExternalAHRS_OSCP::configure_oscp_imu(oscp_parser_t &parser) {
             read_uart(parser);
             
             const uint32_t now = AP_HAL::millis();
-            if ((last_frame_ms != 0) && ((now - last_frame_ms) < 200) && last_op_mode == oscp_operating_mode_t::OSCP_OP_MODE_MEDIUM) {
+            if ((last_frame_ms != 0) && ((now - last_frame_ms) < 50) && last_op_mode == oscp_operating_mode_t::OSCP_OP_MODE_MEDIUM) {
                 setup_complete = true;
                 GCS_SEND_TEXT(MAV_SEVERITY_INFO, "OSCP: Medium (OMM: 500Hz) confirmed");
                 return;
             }
         }
     }
- 
+    
     GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "OSCP: failed to enter Medium mode");
 }
 

@@ -13,9 +13,11 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+/* Thank you for flying with OSCP. For integration steps, see https://docs.oscp.com/Integration/ArduPilot/ */
+
+/* Includes */
 #define AP_MATH_ALLOW_DOUBLE_FUNCTIONS 1
 #include "AP_ExternalAHRS_config.h"
-
 #if AP_EXTERNAL_AHRS_OSCP_ENABLED
 
 #include "AP_ExternalAHRS_OSCP.h"
@@ -34,28 +36,8 @@
 
 extern const AP_HAL::HAL& hal;
 
-AP_ExternalAHRS_OSCP::AP_ExternalAHRS_OSCP(AP_ExternalAHRS* _frontend, AP_ExternalAHRS::state_t& _state) :
-    AP_ExternalAHRS_backend(_frontend, _state)
-{
-    auto &sm = AP::serialmanager();
-    uart = sm.find_serial(AP_SerialManager::SerialProtocol_AHRS, 0);
-    if (uart == nullptr) {
-        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "OSCP: No SERIALx_PROTOCOL=36(AHRS) Port Found");
-        return;
-    }
-
-    baudrate = sm.find_baudrate(AP_SerialManager::SerialProtocol_AHRS, 0);
-    port_num = sm.find_portnum(AP_SerialManager::SerialProtocol_AHRS, 0);
-
-    set_default_sensors(uint16_t(AP_ExternalAHRS::AvailableSensor::IMU) |
-                        uint16_t(AP_ExternalAHRS::AvailableSensor::COMPASS));
-
-    if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_ExternalAHRS_OSCP::update_thread, void), "AHRS", 2048, AP_HAL::Scheduler::PRIORITY_SPI, 0)) {
-        AP_HAL::panic("OSCP Failed to start ExternalAHRS update thread");
-    }
-}
-
-const uint16_t AP_ExternalAHRS_OSCP::CRC_LUT[256] = {
+/* Static variables */
+const uint16_t AP_ExternalAHRS_OSCP::OSCP_CRC_LUT[256] = {
     0x0000, 0xA2EB, 0xE73D, 0x45D6, 0x6C91, 0xCE7A, 0x8BAC, 0x2947,
     0xD922, 0x7BC9, 0x3E1F, 0x9CF4, 0xB5B3, 0x1758, 0x528E, 0xF065,
     0x10AF, 0xB244, 0xF792, 0x5579, 0x7C3E, 0xDED5, 0x9B03, 0x39E8,
@@ -101,8 +83,29 @@ const uint8_t AP_ExternalAHRS_OSCP::OSCP_FRAME_LEN[8] = {
     40, // STARTUP
 };
 
+/* AP_ExternalAHRS_Backend overrides */
+AP_ExternalAHRS_OSCP::AP_ExternalAHRS_OSCP(AP_ExternalAHRS* _frontend, AP_ExternalAHRS::state_t& _state) :
+    AP_ExternalAHRS_backend(_frontend, _state) {
+    auto &sm = AP::serialmanager();
+    uart = sm.find_serial(AP_SerialManager::SerialProtocol_AHRS, 0);
+    if (uart == nullptr) {
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "OSCP: No SERIALx_PROTOCOL=36 (AHRS) Port Found");
+        return;
+    }
+
+    baudrate = sm.find_baudrate(AP_SerialManager::SerialProtocol_AHRS, 0);
+    port_num = sm.find_portnum(AP_SerialManager::SerialProtocol_AHRS, 0);
+
+    set_default_sensors(uint16_t(AP_ExternalAHRS::AvailableSensor::IMU) | uint16_t(AP_ExternalAHRS::AvailableSensor::COMPASS));
+
+    if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_ExternalAHRS_OSCP::update_thread, void), "AHRS", 2048, AP_HAL::Scheduler::PRIORITY_SPI, 0)) {
+        AP_HAL::panic("OSCP Failed to start ExternalAHRS update thread");
+    }
+}
+
 bool AP_ExternalAHRS_OSCP::initialised(void) const {
     if (setup_complete) {
+        // setup_complete = true, iff Medium mode (OMM:500 Hz) achieved in oscp_configure_imu()
         return true;
     }
     return false;
@@ -131,7 +134,75 @@ bool AP_ExternalAHRS_OSCP::pre_arm_check(char *failure_msg, uint8_t failure_msg_
     return true;
 }
 
-void AP_ExternalAHRS_OSCP::send_cobs_command(const char *cmd) {
+void AP_ExternalAHRS_OSCP::update_thread(void) {
+    uart->begin(baudrate);
+ 
+    // OSCP IMU Power-On Time from User Manual
+    hal.scheduler->delay(600);
+ 
+    oscp_parser_t parser;
+    oscp_parser_init(&parser);
+    oscp_configure_imu(parser);
+ 
+    while (true) {
+        drain_uart_data(parser);
+
+        /* For OSCP IMU recovery after power cycling */
+        const uint32_t now = AP_HAL::millis();
+        if ((last_frame_ms != 0) && ((now - last_frame_ms) < 50) && last_op_mode != oscp_operating_mode_t::OSCP_OP_MODE_MEDIUM) {
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "OSCP: Recovering IMU to Medium mode! (OMM: 500Hz)");
+            oscp_configure_imu(parser);
+        }
+    }
+}
+
+/* get_filter_status() currently operates for OSCP external IMU only; but introduction of OSCP EKF, INS, and/or IMU+GPS, this will be updated to reflect the NEW filter status */
+void AP_ExternalAHRS_OSCP::get_filter_status(nav_filter_status &status) const {
+    memset(&status, 0, sizeof(status));
+    status.flags.initalized = initialised();
+    if (healthy()) {
+        status.flags.attitude = true;
+    }
+}
+
+const char* AP_ExternalAHRS_OSCP::get_name() const {
+    if (full_device_name[0] != '\0') {
+        return full_device_name;
+    }
+    return "OSCP";
+}
+
+int8_t AP_ExternalAHRS_OSCP::get_port(void) const {
+    if (uart == nullptr) {
+        return -1;
+    }
+    return port_num;
+}
+
+/* COBS utils */
+AP_ExternalAHRS_OSCP::oscp_err_t AP_ExternalAHRS_OSCP::oscp_cobs_decode(const uint8_t* data, size_t data_len, uint8_t* decode, size_t dec_max_len, size_t* dec_len) {
+    const cobs_decode_result result = cobs_decode(decode, dec_max_len, data, data_len);
+
+    if (result.status != COBS_DECODE_OK) {
+        return oscp_err_t::OSCP_ERR;
+    }
+
+    *dec_len = result.out_len;
+    return oscp_err_t::OSCP_OK;
+}
+
+AP_ExternalAHRS_OSCP::oscp_err_t AP_ExternalAHRS_OSCP::oscp_cobs_encode(const uint8_t *data, size_t data_len, uint8_t *encode, size_t enc_max_len, size_t *enc_len) {
+    const cobs_encode_result result = cobs_encode(encode, enc_max_len, data, data_len);
+
+    if (result.status != COBS_ENCODE_OK) {
+        return oscp_err_t::OSCP_ERR;
+    }
+
+    *enc_len = result.out_len;
+    return oscp_err_t::OSCP_OK;
+}
+
+void AP_ExternalAHRS_OSCP::oscp_send_cobs_command(const char *cmd) {
     uint8_t enc[256];
     size_t enc_len = 0;
 
@@ -139,33 +210,13 @@ void AP_ExternalAHRS_OSCP::send_cobs_command(const char *cmd) {
         return;
     }
 
+    /* Add 0x00 at end of frame to show frame ended */
     enc[enc_len++] = 0x00;
     uart->write(enc, enc_len);
 }
 
-void AP_ExternalAHRS_OSCP::update_thread(void) {
-    uart->begin(baudrate);
- 
-    hal.scheduler->delay(600); //OSCP IMU Power-On Time = 500 ms @ Tc = +25degC
- 
-    oscp_parser_t parser;
-    oscp_parser_init(&parser);
-    configure_oscp_imu(parser);
- 
-    while (true) {
-        read_uart(parser);
-
-        /* For IMU recovery after power cycling */
-        const uint32_t now = AP_HAL::millis();
-        if ((last_frame_ms != 0) && ((now - last_frame_ms) < 50) && last_op_mode != oscp_operating_mode_t::OSCP_OP_MODE_MEDIUM) {
-            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "OSCP: Recovering IMU to Medium (OMM: 500Hz) Recovery!");
-            configure_oscp_imu(parser);
-        }
-    }
-}
- 
-void AP_ExternalAHRS_OSCP::read_uart(oscp_parser_t &parser)
-{
+/* Serial utils */
+void AP_ExternalAHRS_OSCP::drain_uart_data(oscp_parser_t &parser) {
     uint8_t buf[OSCP_FRAME_MAX_LEN];
     uint32_t n = uart->available();
     n = MIN(n, sizeof(buf));
@@ -178,55 +229,55 @@ void AP_ExternalAHRS_OSCP::read_uart(oscp_parser_t &parser)
     }
 }
  
-void AP_ExternalAHRS_OSCP::configure_oscp_imu(oscp_parser_t &parser) {
-    
+/* IMU configuration */
+void AP_ExternalAHRS_OSCP::oscp_configure_imu(oscp_parser_t &parser) {
+    /* Introduction of OSCP EKF will result in enabling previously disabled frames, i.e. Quaternions, Euler, GNSS, etc. */
     for (uint8_t attempt = 1; attempt <= 5 && !setup_complete; attempt++) {
  
-        send_cobs_command("CONFIG\r\n");
+        oscp_send_cobs_command("CONFIG\r\n");
         hal.scheduler->delay(50);
  
-        send_cobs_command("OMM\r\n");
+        oscp_send_cobs_command("OMM\r\n");
         hal.scheduler->delay(50);
  
-        send_cobs_command("EOFTR\r\n");
+        oscp_send_cobs_command("EOFTR\r\n");
         hal.scheduler->delay(50);
  
-        send_cobs_command("DOFTE\r\n");
+        oscp_send_cobs_command("DOFTE\r\n");
         hal.scheduler->delay(50);
  
-        send_cobs_command("DOFTQ\r\n");
+        oscp_send_cobs_command("DOFTQ\r\n");
         hal.scheduler->delay(50);
  
-        send_cobs_command("DOFTM\r\n");
+        oscp_send_cobs_command("DOFTM\r\n");
         hal.scheduler->delay(50);
  
-        send_cobs_command("SUF\r\n");
+        oscp_send_cobs_command("SUF\r\n");
         hal.scheduler->delay(50);
  
-        send_cobs_command("EXIT\r\n");
+        oscp_send_cobs_command("EXIT\r\n");
  
+        /* Wait 1 second to try again, if fails after 5x, something is wrong keep setup_complete = false */
         const uint32_t time = AP_HAL::millis();
         while ((AP_HAL::millis() - time) < 1000) {
-            read_uart(parser);
+            drain_uart_data(parser);
             
             const uint32_t now = AP_HAL::millis();
             if ((last_frame_ms != 0) && ((now - last_frame_ms) < 50) && last_op_mode == oscp_operating_mode_t::OSCP_OP_MODE_MEDIUM) {
                 setup_complete = true;
-                GCS_SEND_TEXT(MAV_SEVERITY_INFO, "OSCP: Medium (OMM: 500Hz) confirmed");
+                GCS_SEND_TEXT(MAV_SEVERITY_INFO, "OSCP: Medium mode confirmed (OMM: 500Hz)");
                 return;
             }
         }
     }
-    
-    GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "OSCP: failed to enter Medium mode");
+
+    /* ArduPilot's SCHED_LOOP_RATE = 400Hz (Default); will trigger a PreArm error unless configured. Changing value must be done by ADVANCED USERS ONLY */
+    GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "OSCP: failed to enter Medium mode (OML: 100Hz)");
 }
 
-void AP_ExternalAHRS_OSCP::get_filter_status(nav_filter_status &status) const {
-    memset(&status, 0, sizeof(status));
-    status.flags.initalized = initialised();
-    if (healthy()) {
-        status.flags.attitude = true;
-    }
+/* Parser functions */
+void AP_ExternalAHRS_OSCP::oscp_parser_init(oscp_parser_t *_parser) {
+    memset(_parser, 0, sizeof(oscp_parser_t));
 }
 
 void AP_ExternalAHRS_OSCP::oscp_parser_feed_buf(oscp_parser_t* _parser, const uint8_t* buf, const size_t buf_len) {
@@ -238,7 +289,7 @@ void AP_ExternalAHRS_OSCP::oscp_parser_feed_buf(oscp_parser_t* _parser, const ui
 void AP_ExternalAHRS_OSCP::oscp_parser_feed(oscp_parser_t* _parser, uint8_t byte) {
     if (byte == OSCP_FRAME_DELIM) {
         if (_parser->synced && _parser->buf_len > 0) {
-            parser_buffer(_parser);
+            oscp_parser_buffer(_parser);
         }
 
         oscp_parser_go(_parser);
@@ -258,7 +309,7 @@ void AP_ExternalAHRS_OSCP::oscp_parser_feed(oscp_parser_t* _parser, uint8_t byte
     _parser->buf[_parser->buf_len++] = byte;
 }
 
-void AP_ExternalAHRS_OSCP::parser_buffer(oscp_parser_t* _parser) {
+void AP_ExternalAHRS_OSCP::oscp_parser_buffer(oscp_parser_t* _parser) {
     uint8_t decode[OSCP_FRAME_MAX_LEN];
     size_t dec_len = 0;
 
@@ -283,6 +334,7 @@ void AP_ExternalAHRS_OSCP::parser_buffer(oscp_parser_t* _parser) {
         return;
     }
 
+    /* Accessors */
     last_op_mode = get_operating_mode(decode[0]);
     last_frame_ms = AP_HAL::millis();
 
@@ -293,101 +345,14 @@ void AP_ExternalAHRS_OSCP::parser_buffer(oscp_parser_t* _parser) {
 
     switch (frame.type) {
         case oscp_frame_type_t::OSCP_FRAME_RAW:
-            decode_raw(&frame, decode);
+            oscp_decode_raw(&frame, decode);
             break;
         case oscp_frame_type_t::OSCP_FRAME_STARTUP:
-            decode_startup(&frame, decode);
+            oscp_decode_startup(&frame, decode);
             break;
         default:
             break;
     }
-}
-
-AP_ExternalAHRS_OSCP::oscp_err_t AP_ExternalAHRS_OSCP::oscp_cobs_decode(const uint8_t* data, size_t data_len, uint8_t* decode, size_t dec_max_len, size_t* dec_len) {
-    const cobs_decode_result result =
-        cobs_decode(decode, dec_max_len, data, data_len);
-
-    if (result.status != COBS_DECODE_OK) {
-        return oscp_err_t::OSCP_ERR;
-    }
-
-    *dec_len = result.out_len;
-    return oscp_err_t::OSCP_OK;
-}
-
-AP_ExternalAHRS_OSCP::oscp_err_t AP_ExternalAHRS_OSCP::oscp_cobs_encode(const uint8_t *data, size_t data_len, uint8_t *encode, size_t enc_max_len, size_t *enc_len) {
-    const cobs_encode_result result = 
-        cobs_encode(encode, enc_max_len, data, data_len);
-
-    if (result.status != COBS_ENCODE_OK) {
-        return oscp_err_t::OSCP_ERR;
-    }
-
-    *enc_len = result.out_len;
-    return oscp_err_t::OSCP_OK;
-}
-
-uint16_t AP_ExternalAHRS_OSCP::oscp_crc16(const uint8_t* data, size_t len) {
-    uint16_t crc = 0xFFFF;
-    for (uint32_t i = 0; i < len; i++) {
-        const uint8_t pos = (crc >> 8) ^ data[i];
-        crc = (crc << 8) ^ CRC_LUT[pos];
-    }
-    return crc;
-}
-
-bool AP_ExternalAHRS_OSCP::crc_check(const uint8_t* frame, size_t len) {
-    if (len < 3) {
-        return false;
-    }
-
-    const uint16_t computed = oscp_crc16(frame, len - 2);
-    const uint16_t received = (frame[len - 1] << 8) | frame[len - 2];
-    return computed == received;
-}
-
-void AP_ExternalAHRS_OSCP::decode_raw(oscp_frame_t *frame, const uint8_t *data) {
-    memcpy(&frame->content.raw, data, sizeof(oscp_raw_t));
-    const oscp_raw_t *raw = &frame->content.raw;
-
-    if (raw->status != OSCP_STATUS_OK) {
-        const uint32_t now = AP_HAL::millis();
-        if ((now - last_status_warn_ms) > 5000) {
-            last_status_warn_ms = now;
-            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "OSCP: status 0x%02X", (unsigned)raw->status);
-        }
-        return;
-    }
-
-    last_raw_pkt = AP_HAL::millis();
-
-    {
-        WITH_SEMAPHORE(state.sem);
-        state.accel = Vector3f{raw->accel_x, raw->accel_y, raw->accel_z} * GRAVITY_MSS;
-        state.gyro = Vector3f{raw->gyro_x, raw->gyro_y, raw->gyro_z} * DEG_TO_RAD;
-    }
-
-    {
-        AP_ExternalAHRS::ins_data_message_t ins;
-        ins.accel = state.accel;
-        ins.gyro = state.gyro;
-        ins.temperature = raw->temp;
-        AP::ins().handle_external(ins);
-
-        AP_ExternalAHRS::mag_data_message_t mag;
-        mag.field = Vector3f(raw->mag_x, raw->mag_y, raw->mag_z) * 10.0f;
-        AP::compass().handle_external(mag);
-    }
-}
-
-void AP_ExternalAHRS_OSCP::decode_startup(oscp_frame_t *frame, const uint8_t *data) {
-    memcpy(&frame->content.startup, data, sizeof(oscp_startup_t));
-    const oscp_startup_t *start_up = &frame->content.startup;
-
-    memcpy(mark_number, start_up->mark_number, 10);
-    mark_number[10] = '\0';
-
-    hal.util->snprintf(oscp_device_name, sizeof(oscp_device_name), "%s-%u", mark_number, (unsigned)start_up->unit_number);
 }
 
 void AP_ExternalAHRS_OSCP::oscp_parser_go(oscp_parser_t* _parser) {
@@ -400,22 +365,71 @@ void AP_ExternalAHRS_OSCP::oscp_parser_reset(oscp_parser_t* _parser) {
     _parser->synced = false;
 }
 
-void AP_ExternalAHRS_OSCP::oscp_parser_init(oscp_parser_t *_parser) {
-    memset(_parser, 0, sizeof(oscp_parser_t));
+/* CRC utils*/
+uint16_t AP_ExternalAHRS_OSCP::crc16(const uint8_t* data, size_t len) {
+    uint16_t crc = 0xFFFF;
+    for (uint32_t i = 0; i < len; i++) {
+        const uint8_t pos = (crc >> 8) ^ data[i];
+        crc = (crc << 8) ^ OSCP_CRC_LUT[pos];
+    }
+    return crc;
 }
 
-const char* AP_ExternalAHRS_OSCP::get_name() const {
-    if (oscp_device_name[0] != '\0') {
-        return oscp_device_name;
+bool AP_ExternalAHRS_OSCP::crc_check(const uint8_t* frame, size_t len) {
+    if (len < 3) {
+        return false;
     }
-    return "OSCP";
+
+    const uint16_t computed = crc16(frame, len - 2);
+    const uint16_t received = (frame[len - 1] << 8) | frame[len - 2];
+    return computed == received;
 }
 
-int8_t AP_ExternalAHRS_OSCP::get_port(void) const {
-    if (uart == nullptr) {
-        return -1;
+/* Parser decoding */
+void AP_ExternalAHRS_OSCP::oscp_decode_raw(oscp_frame_t *frame, const uint8_t *data) {
+    memcpy(&frame->content.raw, data, sizeof(oscp_raw_t));
+    const oscp_raw_t *raw = &frame->content.raw;
+
+    if (raw->status != OSCP_STATUS_OK) {
+        const uint32_t now = AP_HAL::millis();
+        if ((now - last_status_warn_ms) > 5000) {
+            last_status_warn_ms = now;
+             /* Refer to 'Status Byte Masks' for error diagnosis*/
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "OSCP: status 0x%02X", (unsigned)raw->status);
+        }
+
+        return;
     }
-    return port_num;
+
+    last_raw_pkt = AP_HAL::millis();
+
+    {
+        WITH_SEMAPHORE(state.sem);
+        state.accel = Vector3f{raw->accel_x, raw->accel_y, raw->accel_z} * GRAVITY_MSS;
+        state.gyro = Vector3f{raw->gyro_x, raw->gyro_y, raw->gyro_z} * DEG_TO_RAD;
+    }
+
+    {
+        AP_ExternalAHRS::ins_data_message_t imu;
+        imu.accel = state.accel;
+        imu.gyro = state.gyro;
+        imu.temperature = raw->temp;
+        AP::ins().handle_external(imu);
+
+        AP_ExternalAHRS::mag_data_message_t mag;
+        mag.field = Vector3f(raw->mag_x, raw->mag_y, raw->mag_z) * UTESLA_TO_MGAUSS;
+        AP::compass().handle_external(mag);
+    }
+}
+
+void AP_ExternalAHRS_OSCP::oscp_decode_startup(oscp_frame_t *frame, const uint8_t *data) {
+    memcpy(&frame->content.startup, data, sizeof(oscp_startup_t));
+    const oscp_startup_t *start_up = &frame->content.startup;
+
+    memcpy(mark_number, start_up->mark_number, 10);
+    mark_number[10] = '\0';
+
+    hal.util->snprintf(full_device_name, sizeof(full_device_name), "%s-%u", mark_number, (unsigned)start_up->unit_number);
 }
 
 #endif  // AP_EXTERNAL_AHRS_OSCP_ENABLED

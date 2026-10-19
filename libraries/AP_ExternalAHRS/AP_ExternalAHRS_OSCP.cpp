@@ -98,7 +98,7 @@ AP_ExternalAHRS_OSCP::AP_ExternalAHRS_OSCP(AP_ExternalAHRS* _frontend, AP_Extern
 
     set_default_sensors(uint16_t(AP_ExternalAHRS::AvailableSensor::IMU) | uint16_t(AP_ExternalAHRS::AvailableSensor::COMPASS));
 
-    if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_ExternalAHRS_OSCP::update_thread, void), "AHRS", 2048, AP_HAL::Scheduler::PRIORITY_SPI, 0)) {
+    if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_ExternalAHRS_OSCP::update_thread, void), "AHRS", 4096, AP_HAL::Scheduler::PRIORITY_SPI, 0)) {
         AP_HAL::panic("OSCP Failed to start ExternalAHRS update thread");
     }
 }
@@ -114,7 +114,7 @@ bool AP_ExternalAHRS_OSCP::initialised(void) const {
 bool AP_ExternalAHRS_OSCP::healthy(void) const {
     const uint32_t now = AP_HAL::millis();
 
-    if (initialised() && (now - last_raw_pkt) < 50) {
+    if (initialised() && (now - last_raw_pkt) < 40) {
         return true;
     }
 
@@ -150,6 +150,7 @@ void AP_ExternalAHRS_OSCP::update_thread(void) {
         /* For OSCP IMU recovery after power cycling */
         const uint32_t now = AP_HAL::millis();
         if ((last_frame_ms != 0) && ((now - last_frame_ms) < 50) && last_op_mode != oscp_operating_mode_t::OSCP_OP_MODE_MEDIUM) {
+            setup_complete = false;
             GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "OSCP: Recovering IMU to Medium mode! (OMM: 500Hz)");
             oscp_configure_imu(parser);
         }
@@ -232,7 +233,7 @@ void AP_ExternalAHRS_OSCP::drain_uart_data(oscp_parser_t &parser) {
 /* IMU configuration */
 void AP_ExternalAHRS_OSCP::oscp_configure_imu(oscp_parser_t &parser) {
     /* Introduction of OSCP EKF will result in enabling previously disabled frames, i.e. Quaternions, Euler, GNSS, etc. */
-    for (uint8_t attempt = 1; attempt <= 5 && !setup_complete; attempt++) {
+    for (uint8_t attempt = 1; attempt <= 3 && !setup_complete; attempt++) {
  
         oscp_send_cobs_command("CONFIG\r\n");
         hal.scheduler->delay(50);
@@ -257,9 +258,9 @@ void AP_ExternalAHRS_OSCP::oscp_configure_imu(oscp_parser_t &parser) {
  
         oscp_send_cobs_command("EXIT\r\n");
  
-        /* Wait 1 second to try again, if fails after 5x, something is wrong keep setup_complete = false */
+        /* Wait 250ms to try again, if fails after 3x, something is wrong keep setup_complete = false */
         const uint32_t time = AP_HAL::millis();
-        while ((AP_HAL::millis() - time) < 1000) {
+        while ((AP_HAL::millis() - time) < 250) {
             drain_uart_data(parser);
             
             const uint32_t now = AP_HAL::millis();
@@ -271,7 +272,8 @@ void AP_ExternalAHRS_OSCP::oscp_configure_imu(oscp_parser_t &parser) {
         }
     }
 
-    /* ArduPilot's SCHED_LOOP_RATE = 400Hz (Default); will trigger a PreArm error unless configured. Changing value must be done by ADVANCED USERS ONLY */
+    /* ArduPilot's SCHED_LOOP_RATE = 400Hz (Default); will trigger a PreArm error unless configured. Changing value must be done by ADVANCED USERS ONLY setup_complete = false; drone will stay grounded. */
+    setup_complete = false;
     GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "OSCP: failed to enter Medium mode (OML: 100Hz)");
 }
 
@@ -405,8 +407,9 @@ void AP_ExternalAHRS_OSCP::oscp_decode_raw(oscp_frame_t *frame, const uint8_t *d
 
     {
         WITH_SEMAPHORE(state.sem);
-        state.accel = Vector3f{raw->accel_x, raw->accel_y, raw->accel_z} * GRAVITY_MSS;
-        state.gyro = Vector3f{raw->gyro_x, raw->gyro_y, raw->gyro_z} * DEG_TO_RAD;
+        // OSCP is Z-up; rotate Roll180 into ArduPilot FRD (X fwd, Y right, Z down)
+        state.accel = Vector3f{raw->accel_x, -raw->accel_y, -raw->accel_z} * GRAVITY_MSS;
+        state.gyro  = Vector3f{raw->gyro_x,  -raw->gyro_y,  -raw->gyro_z}  * DEG_TO_RAD;
     }
 
     {
@@ -417,7 +420,7 @@ void AP_ExternalAHRS_OSCP::oscp_decode_raw(oscp_frame_t *frame, const uint8_t *d
         AP::ins().handle_external(imu);
 
         AP_ExternalAHRS::mag_data_message_t mag;
-        mag.field = Vector3f(raw->mag_x, raw->mag_y, raw->mag_z) * UTESLA_TO_MGAUSS;
+        mag.field = Vector3f(raw->mag_x, -raw->mag_y, -raw->mag_z) * UTESLA_TO_MGAUSS;
         AP::compass().handle_external(mag);
     }
 }

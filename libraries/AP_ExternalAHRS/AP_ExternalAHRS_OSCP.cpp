@@ -321,10 +321,9 @@ void AP_ExternalAHRS_OSCP::oscp_parser_buffer(oscp_parser_t* _parser) {
         return;
     }
 
-    //const uint8_t frame_type = decode[0] & 0x07u;
     const oscp_frame_type_t frame_type = get_frame_type(decode[0]);
-    if (frame_type > 7 || dec_len != OSCP_FRAME_LEN[uint8_t frame_type]) {
-         _parser->stats.framing_errors++;
+    if (dec_len != OSCP_FRAME_LEN[uint8_t(frame_type)]) {
+        _parser->stats.framing_errors++;
         return;
     }
 
@@ -339,7 +338,7 @@ void AP_ExternalAHRS_OSCP::oscp_parser_buffer(oscp_parser_t* _parser) {
 
     oscp_frame_t frame;
     memset(&frame, 0, sizeof(frame));
-    frame.type = (oscp_frame_type_t)frame_type;
+    frame.type = frame_type;
     _parser->stats.frames_ok++;
 
     switch (frame.type) {
@@ -406,18 +405,17 @@ void AP_ExternalAHRS_OSCP::oscp_decode_raw(oscp_frame_t *frame, const uint8_t *d
         WITH_SEMAPHORE(state.sem);
         state.accel = Vector3f{raw->accel_x, raw->accel_y, raw->accel_z} * GRAVITY_MSS;
         state.gyro  = Vector3f{raw->gyro_x,  raw->gyro_y,  raw->gyro_z}  * DEG_TO_RAD;
-
-        imu.accel = state.accel;
-        imu.gyro = state.gyro;
     }
 
     {
         AP_ExternalAHRS::ins_data_message_t imu;
+        imu.accel = state.accel;
+        imu.gyro = state.gyro;
         imu.temperature = raw->temp;
         AP::ins().handle_external(imu);
     }
 
-    #if #if AP_COMPASS_EXTERNALAHRS_ENABLED
+    #if AP_COMPASS_EXTERNALAHRS_ENABLED
     {
         AP_ExternalAHRS::mag_data_message_t mag;
         mag.field = Vector3f(raw->mag_x, raw->mag_y, raw->mag_z) * UTESLA_TO_MGAUSS;

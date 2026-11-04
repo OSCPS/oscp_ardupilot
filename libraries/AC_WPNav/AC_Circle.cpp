@@ -289,9 +289,8 @@ bool AC_Circle::update_ms(float climb_rate_ms)
 // See get_closest_point_on_circle_NED_m() for full details.
 void AC_Circle::get_closest_point_on_circle_NEU_cm(Vector3f& result_neu_cm, float& dist_cm) const
 {
-    // Convert input arguments from neu cm to ned meters
-    Vector3p result_ned_m = Vector3p{result_neu_cm.x, result_neu_cm.y, -result_neu_cm.z} * 0.01;
-    float dist_m = dist_cm * 0.01;
+    Vector3p result_ned_m;
+    float dist_m;
 
     // Compute closest point in meters
     get_closest_point_on_circle_NED_m(result_ned_m, dist_m);
@@ -470,7 +469,7 @@ void AC_Circle::check_param_change()
 // perform any required parameter conversions
 void AC_Circle::convert_parameters()
 {
-    // PARAMETER_CONVERSION - Added: Jan-2026 for 4.7
+    // PARAMETER_CONVERSION - Added: Jan-2026 for ArduPilot-4.7
 
     // exit immediately if radius_m parameter is already configured
     if (_radius_parm_m.configured()) {

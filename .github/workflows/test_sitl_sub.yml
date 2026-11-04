@@ -2,7 +2,9 @@ name: test sub
 
 on:
   push:
+    branches: ['**']  # excludes tag pushes
     paths-ignore:
+      - 'Tools/renode/**'
       # remove other vehicles
       - 'AntennaTracker/**'
       - 'ArduCopter/**'
@@ -17,7 +19,8 @@ on:
       - 'Tools/AP_Bootloader/**'
       - 'Tools/AP_Periph/**'
       - 'Tools/bootloaders/**'
-      - 'Tools/CHDK-Script/**'
+      - 'Tools/cameras_gimbals/**'
+      - 'Tools/CHDK-Scripts/**'
       - 'Tools/CodeStyle/**'
       - 'Tools/completion/**'
       - 'Tools/CPUInfo/**'
@@ -35,6 +38,7 @@ on:
       - 'Tools/PrintVersion.py'
       - 'Tools/Replay/**'
       - 'Tools/simulink/**'
+      - 'Tools/terrain-tools/**'
       - 'Tools/UDP_Proxy/**'
       - 'Tools/vagrant/**'
       - 'Tools/Vicon/**'
@@ -51,7 +55,7 @@ on:
       - 'Tools/autotest/balancebot.py'
       - 'Tools/autotest/blimp.py'
       - 'Tools/autotest/helicopter.py'
-      - 'Tools/autotest/location.txt'
+      - 'Tools/autotest/locations.txt'
       - 'Tools/autotest/quadplane.py'
       - 'Tools/autotest/rover.py'
       - 'Tools/autotest/sailboat.py'
@@ -65,24 +69,23 @@ on:
       - '.editorconfig'
       - '.flake8'
       - '.gitattributes'
-      - '.github'
       - '.gitignore'
       - '.pre-commit-config.yaml'
-      - '.pydevproject'
       - '.valgrind-suppressions'
       - '.valgrindrc'
       - 'Dockerfile'
       - 'Vagrantfile'
-      - 'Makefile'
       # Remove some directories check
       - '.vscode/**'
-      - '.github/ISSUE_TEMPLATE/**'
       # Remove change on other workflows
       - '.github/**'
+      - '!.github/actions/**'  # except actions
+      - '!.github/problem-matchers/**'  # except problem matchers
       - '!.github/workflows/test_sitl_sub.yml'  # except this one
 
   pull_request:
     paths-ignore:
+      - 'Tools/renode/**'
       # remove other vehicles
       - 'AntennaTracker/**'
       - 'ArduCopter/**'
@@ -97,7 +100,8 @@ on:
       - 'Tools/AP_Bootloader/**'
       - 'Tools/AP_Periph/**'
       - 'Tools/bootloaders/**'
-      - 'Tools/CHDK-Script/**'
+      - 'Tools/cameras_gimbals/**'
+      - 'Tools/CHDK-Scripts/**'
       - 'Tools/CodeStyle/**'
       - 'Tools/completion/**'
       - 'Tools/CPUInfo/**'
@@ -111,11 +115,11 @@ on:
       - 'Tools/Hello/**'
       - 'Tools/IO_Firmware/**'
       - 'Tools/Linux_HAL_Essentials/**'
-      - 'Tools/LogAnalyzer/**'
       - 'Tools/Pozyx/**'
       - 'Tools/PrintVersion.py'
       - 'Tools/Replay/**'
       - 'Tools/simulink/**'
+      - 'Tools/terrain-tools/**'
       - 'Tools/UDP_Proxy/**'
       - 'Tools/vagrant/**'
       - 'Tools/Vicon/**'
@@ -132,7 +136,7 @@ on:
       - 'Tools/autotest/balancebot.py'
       - 'Tools/autotest/blimp.py'
       - 'Tools/autotest/helicopter.py'
-      - 'Tools/autotest/location.txt'
+      - 'Tools/autotest/locations.txt'
       - 'Tools/autotest/quadplane.py'
       - 'Tools/autotest/rover.py'
       - 'Tools/autotest/sailboat.py'
@@ -146,20 +150,18 @@ on:
       - '.editorconfig'
       - '.flake8'
       - '.gitattributes'
-      - '.github'
       - '.gitignore'
       - '.pre-commit-config.yaml'
-      - '.pydevproject'
       - '.valgrind-suppressions'
       - '.valgrindrc'
       - 'Dockerfile'
       - 'Vagrantfile'
-      - 'Makefile'
       # Remove some directories check
       - '.vscode/**'
-      - '.github/ISSUE_TEMPLATE/**'
       # Remove change on other workflows
       - '.github/**'
+      - '!.github/actions/**'  # except actions
+      - '!.github/problem-matchers/**'  # except problem matchers
       - '!.github/workflows/test_sitl_sub.yml'  # except this one
 
   workflow_dispatch:

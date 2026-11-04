@@ -1,11 +1,72 @@
+#include "AP_DDS_config.h"
+#include "AP_DDS_Client_Key.h"
+
+#if AP_DDS_ENABLED
+
+#ifndef AP_DDS_DELAY_IMU_TOPIC_MS
+#define AP_DDS_DELAY_IMU_TOPIC_MS 5
+#endif
+
+#ifndef AP_DDS_DELAY_TIME_TOPIC_MS
+#define AP_DDS_DELAY_TIME_TOPIC_MS 10
+#endif
+
+#ifndef AP_DDS_DELAY_GPS_GLOBAL_ORIGIN_TOPIC_MS
+#define AP_DDS_DELAY_GPS_GLOBAL_ORIGIN_TOPIC_MS 1000
+#endif
+
+#ifndef AP_DDS_DELAY_GEO_POSE_TOPIC_MS
+#define AP_DDS_DELAY_GEO_POSE_TOPIC_MS 33
+#endif
+
+#ifndef AP_DDS_DELAY_LOCAL_POSE_TOPIC_MS
+#define AP_DDS_DELAY_LOCAL_POSE_TOPIC_MS 33
+#endif
+
+#ifndef AP_DDS_DELAY_LOCAL_VELOCITY_TOPIC_MS
+#define AP_DDS_DELAY_LOCAL_VELOCITY_TOPIC_MS 33
+#endif
+
+#ifndef AP_DDS_DELAY_AIRSPEED_TOPIC_MS
+#define AP_DDS_DELAY_AIRSPEED_TOPIC_MS 33
+#endif
+
+#ifndef AP_DDS_DELAY_RC_TOPIC_MS
+#define AP_DDS_DELAY_RC_TOPIC_MS 100
+#endif
+
+#ifndef AP_DDS_DELAY_BATTERY_STATE_TOPIC_MS
+#define AP_DDS_DELAY_BATTERY_STATE_TOPIC_MS 1000
+#endif
+
+#ifndef AP_DDS_DELAY_STATUS_TOPIC_MS
+#define AP_DDS_DELAY_STATUS_TOPIC_MS 100
+#endif
+
+#ifndef AP_DDS_DELAY_CLOCK_TOPIC_MS
+#define AP_DDS_DELAY_CLOCK_TOPIC_MS 10
+#endif
+
+#ifndef AP_DDS_DELAY_GOAL_TOPIC_MS
+#define AP_DDS_DELAY_GOAL_TOPIC_MS  200
+#endif
+
+// Max DDS topic/service string
+#ifndef AP_DDS_MAX_NAME_LEN
+#define AP_DDS_MAX_NAME_LEN 128
+#endif
+
 #include <AP_HAL/AP_HAL_Boards.h>
 
 #include <stdio.h>
 #include <cstdio>
 
-#include "AP_DDS_config.h"
-#if AP_DDS_ENABLED
 #include <uxr/client/util/ping.h>
+
+#include "AP_DDS_Client.h"
+
+// Whether DDS needs GPS
+#define AP_DDS_NEEDS_GPS AP_DDS_NAVSATFIX_PUB_ENABLED || AP_DDS_STATIC_TF_PUB_ENABLED
 
 #if AP_DDS_NEEDS_GPS
 #include <AP_GPS/AP_GPS.h>
@@ -46,7 +107,6 @@
 #endif // AP_EXTERNAL_CONTROL_ENABLED
 #include "AP_DDS_Frames.h"
 
-#include "AP_DDS_Client.h"
 #include "AP_DDS_Topic_Table.h"
 #include "AP_DDS_Service_Table.h"
 #include "AP_DDS_External_Odom.h"
@@ -1401,7 +1461,7 @@ bool AP_DDS_Client::init_transport()
 bool AP_DDS_Client::init_session()
 {
     // init session
-    const uint32_t client_key = key_base | (uint32_t)gcs().sysid_this_mav(); // unique client key based on MAV_SYSID
+    const uint32_t client_key = AP_DDS::client_key_from_sysid(gcs().sysid_this_mav());
     uxr_init_session(&session, comm, client_key);
 
     // Register topic callbacks
@@ -1437,10 +1497,10 @@ bool AP_DDS_Client::init_session()
     return true;
 }
 
-void AP_DDS_Client::dds_format_name(char* buf, const char* dds_prefix, const uint8_t sysid, const char* name, bool use_sysid_ns)
+void AP_DDS_Client::dds_format_name(char* buf, const char* dds_prefix, const uint32_t sysid, const char* name, bool use_sysid_ns)
 {
     if (use_sysid_ns) {
-        snprintf(buf, AP_DDS_MAX_NAME_LEN, "%s/%s/v%u/%s", dds_prefix, participant_name_prefix, sysid, name);
+        snprintf(buf, AP_DDS_MAX_NAME_LEN, "%s/%s/v%u/%s", dds_prefix, participant_name_prefix, (unsigned)sysid, name);
     } else {
         snprintf(buf, AP_DDS_MAX_NAME_LEN, "%s/%s/%s", dds_prefix, participant_name_prefix, name);
     }
@@ -1450,7 +1510,7 @@ bool AP_DDS_Client::create()
 {
     WITH_SEMAPHORE(csem);
 
-    const uint8_t sysid = gcs().sysid_this_mav();
+    const uint32_t sysid = gcs().sysid_this_mav();
     const bool use_sysid_ns = use_ns.get() != 0;
 
     // Participant
@@ -1460,7 +1520,7 @@ bool AP_DDS_Client::create()
     };
     char participant_name[AP_DDS_MAX_NAME_LEN];
     if (use_sysid_ns) {
-        snprintf(participant_name, sizeof(participant_name), "%s_v%u", participant_name_prefix, sysid);
+        snprintf(participant_name, sizeof(participant_name), "%s_v%u", participant_name_prefix, (unsigned)sysid);
     } else {
         snprintf(participant_name, sizeof(participant_name), "%s", participant_name_prefix);
     }

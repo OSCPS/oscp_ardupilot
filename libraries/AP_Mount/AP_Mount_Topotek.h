@@ -108,7 +108,7 @@ public:
     }
 
     // send camera settings message to GCS
-    void send_camera_settings(mavlink_channel_t chan) const override;
+    void send_camera_settings(mavlink_channel_t chan, uint8_t camera_device_id) const override;
 
     //
     // rangefinder
@@ -239,6 +239,15 @@ private:
     // gimbal distance information analysis
     void gimbal_dist_info_analyse();
 
+    // return the address to send as the source of our packets.  The
+    // gimbal sends its replies out of the interface named here, so this
+    // must be the interface we are actually connected to.  This is one
+    // of the few places it is legitimate to ask a port how it is
+    // connected; the protocol itself carries that information
+    AddressByte source_address() const {
+        return _uart->is_network_port() ? AddressByte::NETWORK : AddressByte::UART;
+    }
+
     // calculate checksum
     uint8_t calculate_crc(const uint8_t *cmd, uint8_t len) const;
 
@@ -262,7 +271,7 @@ private:
     bool _recording;                                            // recording status (received from gimbal)
     bool _is_tracking;                                          // whether to enable the tracking state
     TrackingStatus _last_tracking_state = TrackingStatus::STOPPED_TRACKING; // last tracking state received from gimbal
-    uint8_t _last_mode;                                         // mode during latest update, used to detect mode changes and cancel tracking
+    Mode _last_mode;                                         // mode during latest update, used to detect mode changes and cancel tracking
     bool _sdcard_status;                                        // memory card status (received from gimbal)
     bool _last_lock;                                            // last lock mode sent to gimbal
     bool _got_gimbal_version;                                   // true if gimbal's version has been received

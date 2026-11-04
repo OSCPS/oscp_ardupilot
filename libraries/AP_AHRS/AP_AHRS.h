@@ -51,11 +51,10 @@ public:
         FLAG_ALWAYS_USE_EKF = 0x1,
     };
 
-    // has_status returns information about the EKF health and
-    // capabilities.  It is currently invalid to call this when a
-    // backend is in charge which returns false for get_filter_status
-    // - so this will simply return false for DCM, for example.
-    bool has_status(Status status) const;
+    // configured_backend_has_status returns information about the
+    // configured backend's health and capabilities.  Returns false if
+    // the configured backend does not provide filter status (e.g. DCM).
+    bool configured_backend_has_status(Status status) const;
 
     // Constructor
     AP_AHRS(uint8_t flags = 0);
@@ -122,11 +121,9 @@ public:
     // wind_estimation_enabled returns true if wind estimation is enabled
     bool get_wind_estimation_enabled() const { return wind_estimation_enabled; }
 
-    // return a wind estimation vector, in m/s; returns 0,0,0 on failure
-    const Vector3f &wind_estimate() const { return active_estimates->wind; }
-
-    // return a wind estimation vector, in m/s; returns 0,0,0 on failure
-    bool wind_estimate(Vector3f &wind) const;
+    // return a wind estimation vector in "wind" (m/s); returns false if
+    // we have no valid estimate
+    bool get_wind(Vector3f &wind) const;
 
     // Determine how aligned heading_deg is with the wind. Return result
     // is 1.0 when perfectly aligned heading into wind, -1 when perfectly
@@ -163,13 +160,10 @@ public:
     // airspeed data or synthesised from other sources.
     bool airspeed_EAS(float &airspeed_ret) const;
 
-    enum AirspeedEstimateType : uint8_t {
-        NO_NEW_ESTIMATE = 0,
-        AIRSPEED_SENSOR = 1,
-        DCM_SYNTHETIC = 2,
-        EKF3_SYNTHETIC = 3,
-        SIM = 4,
-    };
+    // the airspeed-estimate source enum now lives on the backend so it
+    // can be stored in AP_AHRS_Backend::Estimates; keep the AP_AHRS name
+    // for existing callers:
+    using AirspeedEstimateType = AP_AHRS_Backend::AirspeedEstimateType;
 
     // return an (equivalent) airspeed estimate if available. return
     // true if airspeed_ret is valid. This value may be derived from
@@ -194,17 +188,9 @@ public:
     // returns false if the data is unavailable
     bool airspeed_health_data(uint8_t instance, float &innovation, float &innovationVariance, uint32_t &age_ms) const;
 
-    // return true if a airspeed sensor is enabled
-    bool airspeed_sensor_enabled(void) const {
-        // FIXME: make this a method on the active backend
-        return AP_AHRS_Backend::airspeed_sensor_enabled();
-    }
-
-    // return true if a airspeed from a specific airspeed sensor is enabled
-    bool airspeed_sensor_enabled(uint8_t airspeed_index) const {
-        // FIXME: make this a method on the active backend
-        return AP_AHRS_Backend::airspeed_sensor_enabled(airspeed_index);
-    }
+    // returns true if airspeed sensor data is being consumed by the
+    // active backend
+    bool airspeed_sensor_data_being_consumed(void) const;
 
     // true if compass is being used
     bool use_compass();
@@ -332,12 +318,11 @@ public:
     // Write terrain (derived from SRTM) altitude in meters above sea level
     void writeTerrainAMSL(float alt_amsl_m);
 
-    // get speed limit
-    void getControlLimits(float &ekfGndSpdLimit, float &controlScaleXY) const {
-        active_backend->get_control_limits(ekfGndSpdLimit, controlScaleXY);
-    }
-
-    float getControlScaleZ(void) const;
+    // get speed limit imposed by the estimator
+    float get_control_ground_speed_limit_ms() const { return active_estimates->control_ground_speed_limit_ms; }
+    // get scaler used to limit response due to poor AHRS estimates
+    float get_control_gain_scaler_XY() const { return active_estimates->control_gain_scaler_XY; }
+    float get_control_gain_scaler_Z() const { return active_estimates->control_gain_scaler_Z; }
 
     // is the AHRS subsystem healthy?
     bool healthy() const;
@@ -358,43 +343,38 @@ public:
     }
 #endif
 
-    // get_filter_status - returns filter status as a series of flags
-    bool get_filter_status(nav_filter_status &status) const {
+    // get_filter_status_for_configured_backend - returns filter status as a series of flags
+    bool get_filter_status_for_configured_backend(nav_filter_status &status) const {
         status = configured_estimates->filter_status;
         return configured_estimates->filter_status_valid;
     }
 
-    // get compass offset estimates
+#if AP_COMPASS_LEARN_COPY_FROM_EKF_ENABLED
+    // get compass offset estimates, in body frame, milligauss
     // true if offsets are valid
-    bool getMagOffsets(uint8_t mag_idx, Vector3f &magOffsets) const;
+    bool getMagOffsets(uint8_t mag_idx, Vector3f &magOffsets) const {
+        return configured_backend->get_mag_offsets(mag_idx, magOffsets);
+    }
+#endif  // AP_COMPASS_LEARN_COPY_FROM_EKF_ENABLED
 
-    // return the amount of yaw angle change due to the last yaw angle reset in radians
-    // returns the time of the last yaw angle reset or 0 if no reset has ever occurred
-    uint32_t getLastYawResetAngle(float &yawAng) {
-        return active_backend->getLastYawResetAngle(yawAng);
+    // returns the number of times the yaw angle has been reset
+    uint16_t get_yaw_reset_count(void) const {
+        return yaw_reset_tracker.count();
     }
 
-    // return the amount of NE position change in meters due to the last reset
-    // returns the time of the last reset or 0 if no reset has ever occurred
-    uint32_t getLastPosNorthEastReset(Vector2f &pos) {
-        return active_backend->getLastPosNorthEastReset(pos);
+    // returns the number of times the NE position has been reset
+    uint16_t get_position_NE_reset_count(void) const {
+        return position_NE_reset_tracker.count();
     }
 
-    // return the amount of NE velocity change in meters/sec due to the last reset
-    // returns the time of the last reset or 0 if no reset has ever occurred
-    uint32_t getLastVelNorthEastReset(Vector2f &vel) const {
-        return active_backend->getLastVelNorthEastReset(vel);
-    }
-
-    // return the amount of vertical position change due to the last reset in meters
-    // returns the time of the last reset or 0 if no reset has ever occurred
-    uint32_t getLastPosDownReset(float &posDelta) {
-        return active_backend->getLastPosDownReset(posDelta);
+    // returns the number of times the D position has been reset
+    uint16_t get_position_D_reset_count(void) const {
+        return position_D_reset_tracker.count();
     }
 
     // returns a counter which is incremented each time the estimator's output resets
     uint16_t get_last_attitude_reset_count() const {
-        return state.attitude_reset_count;
+        return attitude_reset_tracker.count();
     }
 
     // Resets the baro so that it reads zero at the current height
@@ -408,7 +388,10 @@ public:
     // get_hgt_ctrl_limit - get maximum height to be observed by the control loops in meters and a validity flag
     // this is used to limit height during optical flow navigation
     // it will return invalid when no limiting is required
-    bool get_hgt_ctrl_limit(float &limit) const;
+    bool get_hgt_ctrl_limit(float &limit) const {
+        limit = active_estimates->control_height_limit_m;
+        return active_estimates->control_height_limit_valid;
+    }
 
     // Set to true if the terrain underneath is stable enough to be used as a height reference
     // this is not related to terrain following
@@ -421,13 +404,15 @@ public:
     }
 
     // returns true when the state estimates are significantly degraded by vibration
-    bool is_vibration_affected() const;
+    bool is_vibration_affected() const {
+        return configured_estimates->is_vibration_affected;
+    }
 
-    // get_variances - provides the innovations normalised using the innovation variance where a value of 0
+    // get_variances_for_configured_backend - provides the innovations normalised using the innovation variance where a value of 0
     // indicates perfect consistency between the measurement and the EKF solution and a value of 1 is the maximum
     // inconsistency that will be accepted by the filter
     // boolean false is returned if variances are not available
-    bool get_variances(float &velVar, float &posVar, float &hgtVar, Vector3f &magVar, float &tasVar) const {
+    bool get_variances_for_configured_backend(float &velVar, float &posVar, float &hgtVar, Vector3f &magVar, float &tasVar) const {
         velVar = configured_estimates->velVar;
         posVar = configured_estimates->posVar;
         hgtVar = configured_estimates->hgtVar;
@@ -461,12 +446,16 @@ public:
     }
 #endif  // AP_AHRS_GET_MAG_DATA_ENABLED
 
-    // return the index of the airspeed we should use for airspeed measurements
-    // with multiple airspeed sensors and airspeed affinity in EKF3, it is possible to have switched
-    // over to a lane not using the primary airspeed sensor, so AHRS should know which airspeed sensor
-    // to use, i.e, the one being used by the primary lane. A lane switch could have happened due to an 
-    // airspeed sensor fault, which makes this even more necessary
-    uint8_t get_active_airspeed_index() const;
+    // return the index of the airspeed sensor the active backend is
+    // using for airspeed measurements.  Backends which do not track
+    // which sensor they are using report the primary sensor.
+    uint8_t get_active_airspeed_index() const {
+#if AP_AIRSPEED_ENABLED
+        return active_estimates->active_airspeed_index;
+#else
+        return 0;
+#endif
+    }
 
     // get the index of the current primary accelerometer sensor
     uint8_t get_primary_accel_index(void) const { return state.primary_accel; }
@@ -931,10 +920,6 @@ private:
     // write POS (canonical vehicle position) message out:
     void Write_POS(void) const;
 
-    // return an airspeed estimate if available. return true
-    // if we have an estimate
-    bool _airspeed_EAS(float &airspeed_ret, AirspeedEstimateType &status) const;
-
     // set state.configured_ekf_type and the pointer to the configured backend
     void update_configured_ekf_type();
 
@@ -949,10 +934,6 @@ private:
 
     // get configured EKF type:
     EKFType _configured_ekf_type(void) const;
-
-    // return a true airspeed estimate (navigation airspeed) if
-    // available. return true if we have an estimate
-    bool _airspeed_TAS(float &airspeed_ret) const;
 
     // return estimate of true airspeed vector in body frame in m/s
     // returns false if estimate is unavailable
@@ -977,13 +958,16 @@ private:
     // get current location estimate
     bool _get_location(Location &loc) const;
 
-    // return true if a airspeed sensor should be used for the AHRS airspeed estimate
-    bool _should_use_airspeed_sensor(uint8_t airspeed_index) const;
-    
     /*
       update state structure
      */
     void update_state(void);
+
+    // if a backend asked for the DCM airspeed fallback (by publishing
+    // AirspeedEstimateType::DCM_FALLBACK), fill its estimate in from the DCM
+    // backend.  Called once the backend loop has run so the DCM estimate is
+    // current:
+    void fallback_synthetic_airspeed_EAS(AP_AHRS_Backend::Estimates &results);
 
     // returns an EKF type to be used as active if we decide the
     // primary is not good enough.
@@ -1016,7 +1000,6 @@ private:
         bool airspeed_TAS_vec_ok;
         Quaternion quat;
         bool quat_ok;
-        uint16_t attitude_reset_count;
         Location location;
         bool location_ok;
         Vector2f ground_speed_vec;
@@ -1087,6 +1070,7 @@ private:
     };
 
 
+public:
     enum class Options : uint16_t {
         DISABLE_DCM_FALLBACK_FW=(1U<<0),
         DISABLE_DCM_FALLBACK_VTOL=(1U<<1),
@@ -1094,11 +1078,15 @@ private:
         RECORD_ORIGIN=(1U<<3),
         USE_RECORDED_ORIGIN_FOR_NONGPS=(1U<<4),
     };
-    AP_Int16 _options;
-    
+
+    // return true if the given AHRS_OPTIONS bit is set.  Public so the
+    // backends can consult AHRS options while filling their results:
     bool option_set(Options option) const {
         return (_options & uint16_t(option)) != 0;
     }
+
+private:
+    AP_UInt16 _options;
 
     // true when we have completed the common origin setup
     bool done_common_origin;
@@ -1125,7 +1113,16 @@ private:
     AP_AHRS_Backend *active_backend;
     AP_AHRS_Backend::Estimates *active_estimates;
 
-    uint16_t last_active_estimates_attitude_reset_count;
+    // method responsible for updating the reset counters in the AHRS.
+    // These can get bumped if we change backends or the count in the
+    // current backend changes.
+    void update_reset_counters();
+    // reset counters.  These are updated if the backend changes or if
+    // the backend results change (e.g. switching core)
+    AP_AHRS_ResetCounter<uint16_t> attitude_reset_tracker;
+    AP_AHRS_ResetCounter<uint16_t> yaw_reset_tracker;
+    AP_AHRS_ResetCounter<uint16_t> position_NE_reset_tracker;
+    AP_AHRS_ResetCounter<uint16_t> position_D_reset_tracker;
 
     // secondary estimates - used for reporting purposes.  If the
     // primary backend fails this is the backend/result pair likely to

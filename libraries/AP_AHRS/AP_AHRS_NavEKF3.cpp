@@ -38,6 +38,7 @@ bool AP_AHRS_NavEKF3::start()
         return false;
     }
 
+    // try to start the filter:
     return EKF3.InitialiseFilter();
 }
 
@@ -54,12 +55,16 @@ void AP_AHRS_NavEKF3::update()
     // check the current primary core; if it has changed then assume
     // our attitude is reset:
     const int8_t primary_core = EKF3.getPrimaryCoreIndex();
-    if (old_primary_core != primary_core) {
-        old_primary_core = primary_core;
-        attitude_reset_count++;
+    if (attitude_reset_tracker.update(primary_core)) {
         LOGGER_WRITE_ERROR(LogErrorSubsystem::EKF_PRIMARY, LogErrorCode(primary_core));
         GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "EKF3 primary changed:%d", (unsigned)primary_core);
     }
+
+    yaw_reset_tracker.update(EKF3.getYawResetCount());
+
+    position_NE_reset_tracker.update(EKF3.getPosNorthEastResetCount());
+
+    position_D_reset_tracker.update(EKF3.getPosDownResetCount());
 }
 
 void AP_AHRS_NavEKF3::get_results(AP_AHRS_Backend::Estimates &results)
@@ -111,7 +116,11 @@ void AP_AHRS_NavEKF3::get_results(AP_AHRS_Backend::Estimates &results)
 
     results.attitude_valid = started;
 
-    results.attitude_reset_count = attitude_reset_count;
+    results.attitude_reset_count = attitude_reset_tracker.count();
+
+    results.yaw_reset_count = yaw_reset_tracker.count();
+
+    results.is_vibration_affected = EKF3.isVibrationAffected();
 
     /*
      * acceleration estimates
@@ -157,7 +166,10 @@ void AP_AHRS_NavEKF3::get_results(AP_AHRS_Backend::Estimates &results)
 
     // origin-relative position:
     results.position_NE_valid = EKF3.getPosNE(results.position_NE);
+    results.position_NE_reset_count = position_NE_reset_tracker.count();
+
     results.position_D_valid = EKF3.getPosD(results.position_D);
+    results.position_D_reset_count = position_D_reset_tracker.count();
 
     results.hagl_valid = EKF3.getHAGL(results.hagl);
 
@@ -169,6 +181,22 @@ void AP_AHRS_NavEKF3::get_results(AP_AHRS_Backend::Estimates &results)
     /*
      * Sensor-related information
      */
+#if AP_AIRSPEED_ENABLED
+    // with multiple airspeed sensors and airspeed affinity in EKF3,
+    // it is possible to have switched over to a lane not using the
+    // primary airspeed sensor, so AHRS should know which airspeed
+    // sensor to use, i.e, the one being used by the primary lane. A
+    // lane switch could have happened due to an airspeed sensor
+    // fault, which makes this even more necessary
+    results.active_airspeed_index = primary_airspeed_index();
+    {
+        const auto &airspeed = AP::airspeed();
+        const uint8_t ret = EKF3.getActiveAirspeed();
+        if (ret != UINT8_MAX && airspeed.healthy(ret) && airspeed.use(ret)) {
+            results.active_airspeed_index = ret;
+        }
+    }
+#endif  // AP_AIRSPEED_ENABLED
     // true if the estimator will use GPS data in creating its
     // estimate when the data is good:
     results.configured_to_use_gps = EKF3.using_gps();
@@ -205,6 +233,43 @@ void AP_AHRS_NavEKF3::get_results(AP_AHRS_Backend::Estimates &results)
     results.variances_valid = EKF3.getVariances(results.velVar, results.posVar, results.hgtVar, results.magVar, results.tasVar, offset);
 
     results.terrain_alt_variance_valid = EKF3.getTerrainAltVariance(results.terrain_alt_variance);
+
+    EKF3.getEkfControlLimits(results.control_ground_speed_limit_ms, results.control_gain_scaler_XY);
+    results.control_gain_scaler_Z = 1;
+
+    results.control_height_limit_valid = EKF3.getHeightControlLimit(results.control_height_limit_m);
+
+    // publish this backend's airspeed estimate from the results above:
+    fill_airspeed_estimate(results);
+}
+
+// EKF3 synthesises airspeed from the magnitude of its own air-relative
+// velocity (ground velocity minus its wind estimate), constrained to the
+// ground speed +/- the wind limit.  When it has no wind estimate of its own
+// it asks the frontend to fall back to the DCM synthetic.
+bool AP_AHRS_NavEKF3::synthetic_airspeed_EAS(const Estimates &results, float &airspeed_ret, AirspeedEstimateType &type)
+{
+    if (!results.wind_valid || !results.velocity_NED_valid) {
+        // no wind estimate of our own: ask the frontend to fall back to the
+        // DCM synthetic:
+        type = AirspeedEstimateType::DCM_FALLBACK;
+        return false;
+    }
+    type = AirspeedEstimateType::EKF3_SYNTHETIC;
+    float true_airspeed = (results.velocity_NED - results.wind).length();
+    const float gnd_speed = results.velocity_NED.length();
+    const float wind_max = AP::ahrs().get_max_wind();
+    if (wind_max > 0) {
+        const float tas_lim_lower = MAX(0.0f, gnd_speed - wind_max);
+        const float tas_lim_upper = MAX(tas_lim_lower, gnd_speed + wind_max);
+        true_airspeed = constrain_float(true_airspeed, tas_lim_lower, tas_lim_upper);
+    } else {
+        true_airspeed = MAX(0.0f, true_airspeed);
+    }
+    // divide by EAS2TAS (rather than multiplying by its reciprocal) so the EAS
+    // value matches DCM's EAS<->TAS arithmetic exactly:
+    airspeed_ret = true_airspeed / get_EAS2TAS();
+    return true;
 }
 
 bool AP_AHRS_NavEKF3::pre_arm_check(bool requires_position, char *failure_msg, uint8_t failure_msg_len) const

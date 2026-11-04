@@ -118,7 +118,7 @@ void AP_FETtecOneWire::init()
         return; // no serial port available, so nothing to do here
     }
 
-    _motor_mask = uint32_t(_motor_mask_parameter); // take a copy that will not change after we leave this function
+    _motor_mask = _motor_mask_parameter; // take a copy that will not change after we leave this function
     _esc_count = __builtin_popcount(_motor_mask);
 #if HAL_WITH_ESC_TELEM
     // OneWire supports telemetry in at most 15 ESCs, because of the 4 bit limitation
@@ -127,7 +127,7 @@ void AP_FETtecOneWire::init()
     const auto esc_count_limit = MIN(15, ESC_TELEM_MAX_ESCS);
 #else
     // OneWire supports at most 24 ESCs without telemetry
-    const auto esc_count_limit = MIN(24, NUM_SERVO_CHANNELS);
+    const auto esc_count_limit = MIN(MAX_ESC_COUNT, NUM_SERVO_CHANNELS);
 #endif
     if (_esc_count == 0 || _motor_mask >= (1U << esc_count_limit)) {
         _invalid_mask = true;
@@ -821,8 +821,7 @@ void AP_FETtecOneWire::update()
     }
 #endif
 
-    // get ESC set points
-    uint16_t motor_pwm[_esc_count];
+    uint16_t motor_pwm[MAX_ESC_COUNT];
     for (uint8_t i = 0; i < _esc_count; i++) {
         const ESC &esc = _escs[i];
         const SRV_Channel* c = SRV_Channels::srv_channel(esc.servo_ofs);

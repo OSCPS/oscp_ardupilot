@@ -2,7 +2,9 @@ name: test plane
 
 on:
   push:
+    branches: ['**']  # excludes tag pushes
     paths-ignore:
+      - 'Tools/renode/**'
       # remove other vehicles
       - 'AntennaTracker/**'
       - 'ArduCopter/**'
@@ -17,7 +19,8 @@ on:
       - 'Tools/AP_Bootloader/**'
       - 'Tools/AP_Periph/**'
       - 'Tools/bootloaders/**'
-      - 'Tools/CHDK-Script/**'
+      - 'Tools/cameras_gimbals/**'
+      - 'Tools/CHDK-Scripts/**'
       - 'Tools/CodeStyle/**'
       - 'Tools/completion/**'
       - 'Tools/CPUInfo/**'
@@ -35,6 +38,7 @@ on:
       - 'Tools/PrintVersion.py'
       - 'Tools/Replay/**'
       - 'Tools/simulink/**'
+      - 'Tools/terrain-tools/**'
       - 'Tools/UDP_Proxy/**'
       - 'Tools/vagrant/**'
       - 'Tools/Vicon/**'
@@ -51,7 +55,7 @@ on:
       - 'Tools/autotest/balancebot.py'
       - 'Tools/autotest/blimp.py'
       - 'Tools/autotest/helicopter.py'
-      - 'Tools/autotest/location.txt'
+      - 'Tools/autotest/locations.txt'
       - 'Tools/autotest/rover.py'
       - 'Tools/autotest/sailboat.py'
       - 'Tools/autotest/swarminit.txt'
@@ -64,24 +68,22 @@ on:
       - '.editorconfig'
       - '.flake8'
       - '.gitattributes'
-      - '.github'
       - '.gitignore'
       - '.pre-commit-config.yaml'
-      - '.pydevproject'
       - '.valgrind-suppressions'
       - '.valgrindrc'
       - 'Dockerfile'
       - 'Vagrantfile'
-      - 'Makefile'
       # Remove some directories check
       - '.vscode/**'
-      - '.github/ISSUE_TEMPLATE/**'
       # Remove change on other workflows
       - '.github/**'
+      - '!.github/actions/**'  # except actions
       - '!.github/workflows/test_sitl_plane.yml'  # except this one
 
   pull_request:
     paths-ignore:
+      - 'Tools/renode/**'
       # remove other vehicles
       - 'AntennaTracker/**'
       - 'ArduCopter/**'
@@ -96,7 +98,8 @@ on:
       - 'Tools/AP_Bootloader/**'
       - 'Tools/AP_Periph/**'
       - 'Tools/bootloaders/**'
-      - 'Tools/CHDK-Script/**'
+      - 'Tools/cameras_gimbals/**'
+      - 'Tools/CHDK-Scripts/**'
       - 'Tools/CodeStyle/**'
       - 'Tools/completion/**'
       - 'Tools/CPUInfo/**'
@@ -110,11 +113,11 @@ on:
       - 'Tools/Hello/**'
       - 'Tools/IO_Firmware/**'
       - 'Tools/Linux_HAL_Essentials/**'
-      - 'Tools/LogAnalyzer/**'
       - 'Tools/Pozyx/**'
       - 'Tools/PrintVersion.py'
       - 'Tools/Replay/**'
       - 'Tools/simulink/**'
+      - 'Tools/terrain-tools/**'
       - 'Tools/UDP_Proxy/**'
       - 'Tools/vagrant/**'
       - 'Tools/Vicon/**'
@@ -131,7 +134,7 @@ on:
       - 'Tools/autotest/balancebot.py'
       - 'Tools/autotest/blimp.py'
       - 'Tools/autotest/helicopter.py'
-      - 'Tools/autotest/location.txt'
+      - 'Tools/autotest/locations.txt'
       - 'Tools/autotest/rover.py'
       - 'Tools/autotest/sailboat.py'
       - 'Tools/autotest/swarminit.txt'
@@ -144,20 +147,17 @@ on:
       - '.editorconfig'
       - '.flake8'
       - '.gitattributes'
-      - '.github'
       - '.gitignore'
       - '.pre-commit-config.yaml'
-      - '.pydevproject'
       - '.valgrind-suppressions'
       - '.valgrindrc'
       - 'Dockerfile'
       - 'Vagrantfile'
-      - 'Makefile'
       # Remove some directories check
       - '.vscode/**'
-      - '.github/ISSUE_TEMPLATE/**'
       # Remove change on other workflows
       - '.github/**'
+      - '!.github/actions/**'  # except actions
       - '!.github/workflows/test_sitl_plane.yml'  # except this one
 
   workflow_dispatch:
@@ -200,6 +200,29 @@ jobs:
           ./waf build --target bin/arduplane
           ccache -s
           ccache -z
+      # Pre-build the firmware that tests build at test time, so those
+      # objects are in the saved ccache and the in-test builds become
+      # ccache hits.  Only master pushes save the cache (see
+      # save-ccache), so only they pay for this - on PR runs the chunks
+      # restore master's cache and the pre-build would be pure waste.
+      - name: pre-build test-time firmware
+        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+        shell: bash
+        run: |
+          git config --global --add safe.directory ${GITHUB_WORKSPACE}
+          PATH="/github/home/.local/bin:$PATH"
+          ./waf build --target tool/Replay
+          # PPPPeriph rebuilds the plane and a sitl_periph_PPP AP_Periph via
+          # restart_SITL_frame('quadplane-PPP'), with the Plane jobs' options
+          ./waf configure --board sitl --enable-PPP --enable-networking-tests --debug --num-aux-imus=2
+          ./waf build --target bin/arduplane
+          ./waf configure --board sitl_periph_PPP --enable-PPP --enable-networking-tests --debug --num-aux-imus=2
+          ./waf build --target bin/AP_Periph
+          # CircuitStatusScript builds this via restart_SITL_frame('quadplane-can'),
+          # with the QuadPlane jobs' options
+          ./waf configure --board sitl_periph_universal --debug
+          ./waf build --target bin/AP_Periph
+          ccache -s
       - uses: ./.github/actions/save-ccache
         with:
           key-suffix: ${{ matrix.toolchain }}
@@ -217,7 +240,9 @@ jobs:
             sitltest-plane-tests1a,
             sitltest-plane-tests1b,
             sitltest-plane-tests1c,
-            sitltest-quadplane,
+            sitltest-quadplane-tests1a,
+            sitltest-quadplane-tests1b,
+            sitltest-quadplane-tests1c,
         ]
 
     steps:

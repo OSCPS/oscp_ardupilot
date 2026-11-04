@@ -97,6 +97,7 @@ void SITL_State::_usage(void)
            "\t--autotest-dir DIR       set directory for additional files\n"
            "\t--defaults path          set path to defaults file\n"
            "\t--list-models            list embedded vehicleinfo.json models and exit\n"
+           "\t--sim-periph-lockstep    do not advance the simulation until all simulated peripherals have consumed our state\n"
            "\t--serial0 device         set device string for SERIAL0\n"
            "\t--serial1 device         set device string for SERIAL1\n"
            "\t--serial2 device         set device string for SERIAL2\n"
@@ -108,8 +109,9 @@ void SITL_State::_usage(void)
            "\t--serial8 device         set device string for SERIAL8\n"
            "\t--serial9 device         set device string for SERIAL9\n"
            "\t--uartA device           alias for --serial0 (do not use)\n"
+           "\t--net-device NAME:PORT   attach simulated device NAME to TCP port PORT rather than to a serial port\n"
            "\t--base-port PORT         set port num for base port(default 5670) must be before -I option\n"
-           "\t--rc-in-port PORT        set port num for rc in\n"
+           "\t--rc-in-port PORT|uds:PATH set UDP port or Unix datagram path for rc in\n"
            "\t--sim-address ADDR       set address string for simulator\n"
            "\t--sim-port-in PORT       set port num for simulator in\n"
            "\t--sim-port-out PORT      set port num for simulator out\n"
@@ -253,6 +255,7 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
     const int FG_VIEW_PORT = 5503;
     _base_port = BASE_PORT;
     _rcin_port = RCIN_PORT;
+    _rcin_path = nullptr;
     _fg_view_port = FG_VIEW_PORT;
 
     const int SIM_IN_PORT = 9003;
@@ -264,12 +267,19 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
     _irlock_port = IRLOCK_PORT;
     struct AP_Param::defaults_table_struct temp_cmdline_param{};
 
+#if AP_SIM_SERIALDEVICE_NETWORK_ENABLED
+    // NAME:TCPPORT strings from --net-device options:
+    const char *net_device_strings[4];
+    uint8_t num_net_device_strings = 0;
+#endif  // AP_SIM_SERIALDEVICE_NETWORK_ENABLED
+
     // Set default start time to the real system time.
     // This will be overwritten if argument provided.
     static struct timeval first_tv;
     gettimeofday(&first_tv, nullptr);
     time_t start_time_UTC = first_tv.tv_sec;
-    const bool is_example = APM_BUILD_TYPE(APM_BUILD_Replay) || APM_BUILD_TYPE(APM_BUILD_UNKNOWN);
+    const bool is_example = (APM_BUILD_TYPE(APM_BUILD_Replay) || APM_BUILD_TYPE(APM_BUILD_UNKNOWN)) &&
+                            !model_command_line_enabled;
 
     enum long_options {
         CMDLINE_GIMBAL = 1,
@@ -296,6 +306,9 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
         CMDLINE_SERIAL7,
         CMDLINE_SERIAL8,
         CMDLINE_SERIAL9,
+#if AP_SIM_SERIALDEVICE_NETWORK_ENABLED
+        CMDLINE_NET_DEVICE,
+#endif  // AP_SIM_SERIALDEVICE_NETWORK_ENABLED
         CMDLINE_BASE_PORT,
         CMDLINE_RCIN_PORT,
         CMDLINE_SIM_ADDRESS,
@@ -306,6 +319,7 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
         CMDLINE_SYSID,
         CMDLINE_SLAVE,
         CMDLINE_LIST_MODELS,
+        CMDLINE_SIM_PERIPH_LOCKSTEP,
 #if STORAGE_USE_FLASH
         CMDLINE_SET_STORAGE_FLASH_ENABLED,
 #endif
@@ -358,6 +372,9 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
         {"serial7",         true,   0, CMDLINE_SERIAL7},
         {"serial8",         true,   0, CMDLINE_SERIAL8},
         {"serial9",         true,   0, CMDLINE_SERIAL9},
+#if AP_SIM_SERIALDEVICE_NETWORK_ENABLED
+        {"net-device",      true,   0, CMDLINE_NET_DEVICE},
+#endif  // AP_SIM_SERIALDEVICE_NETWORK_ENABLED
         {"base-port",       true,   0, CMDLINE_BASE_PORT},
         {"rc-in-port",      true,   0, CMDLINE_RCIN_PORT},
         {"sim-address",     true,   0, CMDLINE_SIM_ADDRESS},
@@ -368,6 +385,7 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
         {"sysid",           true,   0, CMDLINE_SYSID},
         {"slave",           true,   0, CMDLINE_SLAVE},
         {"list-models",     false,  0, CMDLINE_LIST_MODELS},
+        {"sim-periph-lockstep", false, 0, CMDLINE_SIM_PERIPH_LOCKSTEP},
 #if STORAGE_USE_FLASH
         {"set-storage-flash-enabled", true,   0, CMDLINE_SET_STORAGE_FLASH_ENABLED},
 #endif
@@ -435,7 +453,7 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
             if (_base_port == BASE_PORT) {
                 _base_port += _instance * 10;
             }
-            if (_rcin_port == RCIN_PORT) {
+            if (_rcin_path == nullptr && _rcin_port == RCIN_PORT) {
                 _rcin_port += _instance * 10;
             }
             if (_fg_view_port == FG_VIEW_PORT) {
@@ -479,10 +497,15 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
             _use_fg_view = true;
             break;
         case CMDLINE_AUTOTESTDIR:
+            // always heap: either the asprintf default above, or a
+            // previous use of this option
+            free(autotest_dir);
             autotest_dir = strdup(gopt.optarg);
+            LSAN_IGNORE_OBJECT(autotest_dir);
             break;
         case CMDLINE_DEFAULTS:
             defaults_path = strdup(gopt.optarg);
+            LSAN_IGNORE_OBJECT(defaults_path);
             break;
         case CMDLINE_UARTA:
         case CMDLINE_UARTB:
@@ -515,11 +538,31 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
         case CMDLINE_SERIAL9:
             _serial_path[opt - CMDLINE_SERIAL0] = gopt.optarg;
             break;
+#if AP_SIM_SERIALDEVICE_NETWORK_ENABLED
+        case CMDLINE_NET_DEVICE:
+            // the simulated device is created below, once the vehicle
+            // model it may attach itself to exists
+            if (num_net_device_strings >= ARRAY_SIZE(net_device_strings)) {
+                printf("Too many --net-device options\n");
+                exit(1);
+            }
+            net_device_strings[num_net_device_strings++] = gopt.optarg;
+            break;
+#endif  // AP_SIM_SERIALDEVICE_NETWORK_ENABLED
         case CMDLINE_BASE_PORT:
             _base_port = atoi(gopt.optarg);
             break;
         case CMDLINE_RCIN_PORT:
-            _rcin_port = atoi(gopt.optarg);
+            if (strncmp(gopt.optarg, "uds:", 4) == 0) {
+                _rcin_path = &gopt.optarg[4];
+                if (_rcin_path[0] == '\0') {
+                    printf("--rc-in-port requires a path after uds:\n");
+                    exit(1);
+                }
+            } else {
+                _rcin_path = nullptr;
+                _rcin_port = atoi(gopt.optarg);
+            }
             break;
         case CMDLINE_SIM_ADDRESS:
             simulator_address = gopt.optarg;
@@ -586,6 +629,9 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
         case CMDLINE_LIST_MODELS:
             list_models_and_exit();
             break;
+        case CMDLINE_SIM_PERIPH_LOCKSTEP:
+            _periph_lockstep = true;
+            break;
         default:
             _usage();
             exit(1);
@@ -596,7 +642,9 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
     // vehicleinfo.json. This makes the binary self-sufficient: a user
     // running `arduplane --model=quadplane-tilt` from a directory without
     // the source tree gets the right parameter defaults from ROMFS.
-    resolve_defaults_from_romfs(model_str, vehicle_str);
+    if (!is_example) {
+        model_str = resolve_defaults_from_romfs(model_str, vehicle_str);
+    }
 
     if (!model_str) {
         printf("You must specify a vehicle model.  Options are:\n");
@@ -638,6 +686,7 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
             sitl_model->set_instance(_instance);
             sitl_model->set_autotest_dir(autotest_dir);
             sitl_model->set_config(config);
+            sitl_model->launch_external_sim();
             break;
         }
     }
@@ -645,6 +694,15 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
         printf("Vehicle model (%s) not found\n", model_str);
         exit(1);
     }
+
+#if AP_SIM_SERIALDEVICE_NETWORK_ENABLED
+    // create devices which the autopilot connects to over the network
+    // rather than over a serial port.  This is done here as some
+    // devices attach themselves to the vehicle model:
+    for (uint8_t i=0; i<num_net_device_strings; i++) {
+        create_net_serial_sim(net_device_strings[i]);
+    }
+#endif  // AP_SIM_SERIALDEVICE_NETWORK_ENABLED
 
     if (storage_posix_enabled && storage_flash_enabled) {
         // this will change in the future!
@@ -812,29 +870,31 @@ static void append_frame_defaults(std::string &joined, const AP_JSON::value &fra
 
 /*
   search a single vehicle entry for a frame matching model_str. Returns
-  true and fills `joined` if found.
+  the matching frame, after appending its defaults to `joined`, or
+  nullptr.
 
   A frame matches when either its JSON key equals model_str (e.g. "X",
-  "octa-quad") or its explicit "model" field equals model_str (e.g.
-  "Callisto" defines model "octa-quad:@ROMFS/models/Callisto.json").
-  Without the second check, frames with a custom model string would
-  not load their per-frame defaults.
+  "Callisto") or its explicit "model" field equals model_str (e.g.
+  "octa-quad-cwx:@ROMFS/models/Callisto.json").
  */
-static bool resolve_frame_in_vehicle(const AP_JSON::value &vehicle,
-                                     const char *model_str,
-                                     std::string &joined)
+static const AP_JSON::value *resolve_frame_in_vehicle(const AP_JSON::value &vehicle,
+                                                      const char *model_str,
+                                                      std::string &joined)
 {
     if (!vehicle.is<AP_JSON::value::object>()) {
-        return false;
+        return nullptr;
     }
     const AP_JSON::value &frames = vehicle.get("frames");
     if (!frames.is<AP_JSON::value::object>()) {
-        return false;
+        return nullptr;
     }
+    // a frame name, e.g. "Callisto"
     if (frames.contains(std::string(model_str))) {
-        append_frame_defaults(joined, frames.get(std::string(model_str)));
-        return true;
+        const AP_JSON::value &frame = frames.get(std::string(model_str));
+        append_frame_defaults(joined, frame);
+        return &frame;
     }
+    // a frame's own model string, e.g. "octa-quad-cwx:@ROMFS/models/Callisto.json"
     const AP_JSON::value::object &frames_obj = frames.get<AP_JSON::value::object>();
     for (const auto &kv : frames_obj) {
         if (!kv.second.is<AP_JSON::value::object>()) {
@@ -844,10 +904,37 @@ static bool resolve_frame_in_vehicle(const AP_JSON::value &vehicle,
         if (model_val.is<std::string>() &&
             model_val.get<std::string>() == model_str) {
             append_frame_defaults(joined, kv.second);
-            return true;
+            return &kv.second;
         }
     }
-    return false;
+    return nullptr;
+}
+
+// Search own vehicle first, then all vehicles, for a single candidate
+// string. Returns the matching frame or nullptr.
+static const AP_JSON::value *search_once(const AP_JSON::value *root, const char *vehicle_str,
+                                         const std::string &candidate, std::string &out)
+{
+    if (vehicle_str != nullptr && root->contains(std::string(vehicle_str))) {
+        const AP_JSON::value *frame = resolve_frame_in_vehicle(root->get(std::string(vehicle_str)),
+                                                               candidate.c_str(), out);
+        if (frame != nullptr) {
+            return frame;
+        }
+    }
+    if (root->is<AP_JSON::value::object>()) {
+        const AP_JSON::value::object &top = root->get<AP_JSON::value::object>();
+        for (const auto &kv : top) {
+            if (vehicle_str != nullptr && kv.first == vehicle_str) {
+                continue;       // already tried
+            }
+            const AP_JSON::value *frame = resolve_frame_in_vehicle(kv.second, candidate.c_str(), out);
+            if (frame != nullptr) {
+                return frame;
+            }
+        }
+    }
+    return nullptr;
 }
 
 /*
@@ -857,44 +944,70 @@ static bool resolve_frame_in_vehicle(const AP_JSON::value &vehicle,
   earlier ones, so any user-supplied --defaults paths layer on top of
   the embedded per-frame defaults.
 
+  If the model is a frame name and that frame has a "model" field, the
+  field becomes the simulation model (e.g. "Callisto" runs
+  "octa-quad-cwx:@ROMFS/models/Callisto.json" with the Callisto
+  defaults). Returns the model to simulate.
+
   We first look under the binary's own vehicle (AP_BUILD_TARGET_NAME)
   and fall back to scanning every top-level vehicle. The scan covers
   the case where a heli binary (AP_BUILD_TARGET_NAME=ArduCopter) is
   asked for a frame that lives under "Helicopter" in the JSON.
+
+  If no frame matches, any ":<args>" suffix and then trailing
+  dash-separated suffixes are stripped and the lookup is retried (e.g.
+  "plane-catapult" falls back to "plane"). This mirrors the
+  model-constructor prefix matching so that physics variants
+  automatically inherit the base frame's defaults.
  */
-void SITL_State::resolve_defaults_from_romfs(const char *model_str, const char *vehicle_str)
+const char *SITL_State::resolve_defaults_from_romfs(const char *model_str, const char *vehicle_str)
 {
     if (model_str == nullptr) {
-        return;
+        return nullptr;
     }
 
     AP_JSON::value *root = AP_JSON::load_json("@ROMFS/vehicleinfo.json");
     if (root == nullptr) {
-        return;     // no embedded data — graceful no-op
+        return model_str;   // no embedded data — graceful no-op
     }
 
     std::string joined;
-    bool found = false;
-
-    if (vehicle_str != nullptr && root->contains(std::string(vehicle_str))) {
-        found = resolve_frame_in_vehicle(root->get(std::string(vehicle_str)),
-                                         model_str, joined);
-    }
-
-    if (!found && root->is<AP_JSON::value::object>()) {
-        const AP_JSON::value::object &top = root->get<AP_JSON::value::object>();
-        for (const auto &kv : top) {
-            if (vehicle_str != nullptr && kv.first == vehicle_str) {
-                continue;       // already tried
-            }
-            if (resolve_frame_in_vehicle(kv.second, model_str, joined)) {
-                found = true;
-                break;
-            }
+    std::string candidate = model_str;
+    // 1. exact match; a frame name selects that frame's model
+    const AP_JSON::value *frame = search_once(root, vehicle_str, candidate, joined);
+    bool found = frame != nullptr;
+    if (found) {
+        const AP_JSON::value &model_val = frame->get("model");
+        if (model_val.is<std::string>()) {
+            model_str = strdup(model_val.get<std::string>().c_str());
+            LSAN_IGNORE_OBJECT(model_str);
         }
     }
 
-    if (found && !joined.empty()) {
+    // 2. "<model>:<args>": take defaults from the part before the
+    //    colon; the full string is still what gets simulated
+    const size_t colon = candidate.find(':');
+    if (!found && colon != std::string::npos) {
+        candidate = candidate.substr(0, colon);
+        found = search_once(root, vehicle_str, candidate, joined) != nullptr;
+    }
+
+    // 3. "<frame>-<variant>", e.g. "plane-catapult": strip variants
+    //    until a frame matches, again for defaults only
+    while (!found) {
+        const size_t dash = candidate.rfind('-');
+        if (dash == std::string::npos) {
+            break;
+        }
+        candidate = candidate.substr(0, dash);
+        found = search_once(root, vehicle_str, candidate, joined) != nullptr;
+    }
+
+    if (!found) {
+        if (defaults_path == nullptr) {
+            printf("No vehicleinfo.json frame for model %s: no default parameters loaded\n", model_str);
+        }
+    } else if (!joined.empty()) {
         if (defaults_path != nullptr) {
             // prepend ROMFS list so explicit --defaults files override
             std::string combined = joined + "," + defaults_path;
@@ -905,6 +1018,7 @@ void SITL_State::resolve_defaults_from_romfs(const char *model_str, const char *
     }
 
     delete root;
+    return model_str;
 }
 
 /*

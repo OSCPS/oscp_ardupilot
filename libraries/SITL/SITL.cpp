@@ -40,6 +40,7 @@
 #include "SIM_StratoBlimp.h"
 #include "SIM_Glider.h"
 #include "SIM_FlightAxis.h"
+#include "SIM_Frame.h"
 
 extern const AP_HAL::HAL& hal;
 
@@ -58,6 +59,12 @@ extern const AP_HAL::HAL& hal;
 #else
 // For SITL, set allowed relay channels to the full mask.
 #define SIM_DEFAULT_ENABLED_RELAY_CHANNELS UINT16_MAX
+#endif
+
+#if APM_BUILD_TYPE(APM_BUILD_Heli)
+#define SIM_DEFAULT_BATT_VOLTAGE 50.4f
+#else
+#define SIM_DEFAULT_BATT_VOLTAGE 12.6f
 #endif
 
 namespace SITL {
@@ -117,7 +124,7 @@ const AP_Param::GroupInfo SIM::var_info[] = {
     // @Description: Simulated battery resting voltage (no load sag). Defaults to and clipped to the battery model's maximum voltage. Changes re-initialize the state of charge, and values below the maximum indicate a partially-charged battery. For batteries with unlimited capacity, see `SIM_BATT_CAP_AH`. Value ignored when receiving battery state updates from an external source.
     // @Units: V
     // @User: Advanced
-    AP_GROUPINFO("BATT_VOLTAGE",  19, SIM,  batt_voltage,  12.6f),
+    AP_GROUPINFO("BATT_VOLTAGE",  19, SIM,  batt_voltage,  SIM_DEFAULT_BATT_VOLTAGE),
     // @Param: BATT_CAP_AH
     // @DisplayName: Simulated battery capacity
     // @Description: Simulated battery capacity. Changes re-initialize the state of charge of the battery. Set to 0 for unlimited capacity. Value ignored when receiving battery state updates from an external source.
@@ -302,15 +309,21 @@ const AP_Param::GroupInfo SIM::var_info2[] = {
     // @DisplayName: RC channel count
     // @Description: SITL RC channel count
     AP_GROUPINFO("RC_CHANCOUNT",21, SIM,  rc_chancount, 16),
+#if AP_SIM_SPRAYER_ENABLED
     // @Group: SPR_
     // @Path: ./SIM_Sprayer.cpp
     AP_SUBGROUPINFO(sprayer_sim, "SPR_", 22, SIM, Sprayer),
+#endif  // AP_SIM_SPRAYER_ENABLED
+#if AP_SIM_GRIPPER_ENABLED
     // @Group: GRPS_
     // @Path: ./SIM_Gripper_Servo.cpp
     AP_SUBGROUPINFO(gripper_sim, "GRPS_", 23, SIM, Gripper_Servo),
+#endif  // AP_SIM_GRIPPER_ENABLED
+#if AP_SIM_GRIPPER_EPM_ENABLED
     // @Group: GRPE_
     // @Path: ./SIM_Gripper_EPM.cpp
     AP_SUBGROUPINFO(gripper_epm_sim, "GRPE_", 24, SIM, Gripper_EPM),
+#endif  // AP_SIM_GRIPPER_EPM_ENABLED
 
     // @Param: WOW_PIN
     // @DisplayName: Weight on Wheels Pin
@@ -325,18 +338,22 @@ const AP_Param::GroupInfo SIM::var_info2[] = {
     // @Vector3Parameter: 1
     AP_GROUPINFO("VIB_FREQ",   26, SIM,  vibe_freq, 0),
 
+#if AP_SIM_PARACHUTE_ENABLED
     // @Group: PARA_
     // @Path: ./SIM_Parachute.cpp
     AP_SUBGROUPINFO(parachute_sim, "PARA_", 27, SIM, Parachute),
+#endif  // AP_SIM_PARACHUTE_ENABLED
 
     // @Param: BAUDLIMIT_EN
     // @DisplayName: Telemetry bandwidth limitting
     // @Description: SITL enable bandwidth limitting on telemetry ports with non-zero values
     AP_GROUPINFO("BAUDLIMIT_EN",   28, SIM,  telem_baudlimit_enable, 0),
 
+#if AP_SIM_PRECLAND_ENABLED
     // @Group: PLD_
     // @Path: ./SIM_Precland.cpp
     AP_SUBGROUPINFO(precland_sim, "PLD_", 29, SIM, SIM_Precland),
+#endif  // AP_SIM_PRECLAND_ENABLED
 
     // @Param: SHOVE_X
     // @DisplayName: Acceleration of shove x
@@ -462,9 +479,11 @@ const AP_Param::GroupInfo SIM::var_info2[] = {
     // @Units: us
     AP_GROUPINFO("LOOP_DELAY",  55, SIM,  loop_delay, 0),
 
+#if AP_SIM_BUZZER_ENABLED
     // @Group: BZ_
     // @Path: ./SIM_Buzzer.cpp
     AP_SUBGROUPINFO(buzzer_sim, "BZ_", 56, SIM, Buzzer),
+#endif  // AP_SIM_BUZZER_ENABLED
 
     // @Group: TA_
     // @Path: ./SIM_ToneAlarm.cpp
@@ -525,7 +544,7 @@ const AP_Param::GroupInfo SIM::var_info3[] = {
 
     // @Param{Sub}: BUOYANCY
     // @DisplayName: Buoyancy
-    // @Description: Buyoancy for submarines
+    // @Description: Net buoyancy force (in Newtons). 0 is neutrally buoyant, negative means the vehicle sinks.
     AP_GROUPINFO_FRAME("BUOYANCY", 15, SIM, buoyancy, 1, AP_PARAM_FRAME_SUB),
 
     // @Param: RATE_HZ
@@ -1606,6 +1625,10 @@ const AP_Param::GroupInfo SIM::ModelParm::var_info[] = {
     AP_SUBGROUPPTR(ais_ptr, "AIS_", 7, SIM::ModelParm, AIS),
 #endif  // AP_SIM_AIS_ENABLED
 
+    // @Group: FRM_
+    // @Path: ./SIM_Frame.cpp
+    AP_SUBGROUPPTR(simframe_ptr, "FRM_", 8, SIM::ModelParm, Frame),
+
     AP_GROUPEND
 };
 
@@ -1804,6 +1827,11 @@ float SIM::measure_distance_at_angle_bf(const Location &location, float angle) c
     Vector2f ray_endpos_cm;
     if (!location2.get_vector_xy_from_origin_NE_cm(ray_endpos_cm)) {
         // should probably use SITL variables...
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+        if (rayfile != nullptr) {
+            fclose(rayfile);
+        }
+#endif
         return 0.0f;
     }
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL

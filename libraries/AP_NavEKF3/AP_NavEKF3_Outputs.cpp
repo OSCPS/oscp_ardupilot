@@ -5,6 +5,8 @@
 #include <AP_DAL/AP_DAL.h>
 #include <GCS_MAVLink/GCS.h>
 
+#define P (const_cast<const Matrix24 &>(Pmut))
+
 // Check basic filter health metrics and return a consolidated health status
 bool NavEKF3_core::healthy(void) const
 {
@@ -73,7 +75,7 @@ float NavEKF3_core::errorScore() const
         if (assume_zero_sideslip()) {
             const auto *arsp = dal.airspeed();
             if (arsp != nullptr && arsp->get_num_sensors() >= 2 && (frontend->_affinity & EKF_AFFINITY_ARSP)) {
-                score = MAX(score, 0.3f * tasTestRatio);
+                score = MAX(score, 0.3f * tas.testRatio);
             }
         }
         // Check magnetometer fusion performance - need this when magnetometer affinity is enabled to override the inherent compass
@@ -162,38 +164,6 @@ void NavEKF3_core::getQuaternion(Quaternion& ret) const
     ret = outputDataNew.quat.tofloat();
 }
 
-// return the amount of yaw angle change due to the last yaw angle reset in radians
-// returns the time of the last yaw angle reset or 0 if no reset has ever occurred
-uint32_t NavEKF3_core::getLastYawResetAngle(float &yawAng) const
-{
-    yawAng = yawResetAngle;
-    return lastYawReset_ms;
-}
-
-// return the amount of NE position change due to the last position reset in metres
-// returns the time of the last reset or 0 if no reset has ever occurred
-uint32_t NavEKF3_core::getLastPosNorthEastReset(Vector2f &pos) const
-{
-    pos = posResetNE.tofloat();
-    return lastPosReset_ms;
-}
-
-// return the amount of vertical position change due to the last vertical position reset in metres
-// returns the time of the last reset or 0 if no reset has ever occurred
-uint32_t NavEKF3_core::getLastPosDownReset(float &posD) const
-{
-    posD = posResetD;
-    return lastPosResetD_ms;
-}
-
-// return the amount of NE velocity change due to the last velocity reset in metres/sec
-// returns the time of the last reset or 0 if no reset has ever occurred
-uint32_t NavEKF3_core::getLastVelNorthEastReset(Vector2f &vel) const
-{
-    vel = velResetNE.tofloat();
-    return lastVelReset_ms;
-}
-
 // return the NED wind speed estimates in m/s (positive is air moving in the direction of the axis)
 // returns true if wind state estimation is active
 bool NavEKF3_core::getWind(Vector3f &wind) const
@@ -234,13 +204,13 @@ bool NavEKF3_core::getAirSpdVec(Vector3f &vel) const
 // returns false if the data is unavailable
 bool NavEKF3_core::getAirSpdHealthData(float &innovation, float &innovationVariance, uint32_t &age_ms) const
 {
-    if (tasDataDelayed.time_ms == 0) {
+    if (tas.dataDelayed.time_ms == 0) {
         // no data has been processed since startup
         return false;
     }
-    innovation = (float)innovVtas;
-    innovationVariance = (float)varInnovVtas;
-    age_ms = imuSampleTime_ms - tasDataDelayed.time_ms;
+    innovation = (float)tas.innov;
+    innovationVariance = (float)tas.varInnov;
+    age_ms = imuSampleTime_ms - tas.dataDelayed.time_ms;
     return true;
 }
 
@@ -323,8 +293,8 @@ bool NavEKF3_core::getPosD(postype_t &posD) const
 bool NavEKF3_core::getHAGL(float &HAGL) const
 {
 #if EK3_FEATURE_OPTFLOW_AGL_KF
-    if (frontend->option_is_enabled(NavEKF3::Option::AglKfForOptflow) && aglKfValid) {
-        HAGL = aglKfH;
+    if (frontend->option_is_enabled(NavEKF3::Option::AglKfForOptflow) && aglKf.valid) {
+        HAGL = aglKf.hgt;
         return healthy();
     }
 #endif
@@ -334,20 +304,25 @@ bool NavEKF3_core::getHAGL(float &HAGL) const
 }
 
 // Return the last calculated latitude, longitude and height in WGS-84
-// If a calculated location isn't available and position source is GPS, return a raw GPS measurement
+// If a calculated location isn't available and position source is GPS, return a raw GPS measurement,
+// unless that GPS must re-pass its quality checks before we will fuse it again
 // The status will return true if a calculation or raw measurement is available
 // The getFilterStatus() function provides a more detailed description of data health and must be checked if data is to be used for flight control
 bool NavEKF3_core::getLLH(Location &loc) const
 {
     Location origin;
-    const bool pos_from_GPS = (frontend->sources.getPosXYSource(core_index) == AP_NavEKF_Source::SourceXY::GPS);
+    // never fall back to reporting a GPS we are refusing to fuse
+    const bool pos_from_GPS = (frontend->sources.getPosXYSource(core_index) == AP_NavEKF_Source::SourceXY::GPS) &&
+        !waitingForGpsChecks;
     if (getOriginLLH(origin)) {
         postype_t posD;
         if (getPosD_local(posD) && PV_AidingMode != AID_NONE) {
             // Altitude returned is an absolute altitude relative to the WGS-84 spherioid
             loc.set_alt_cm(origin.alt - posD*100.0, Location::AltFrame::ABSOLUTE);
-            if (filterStatus.flags.horiz_pos_abs || filterStatus.flags.horiz_pos_rel) {
-                // The EKF is able to provide a position estimate
+            if (filterStatus.flags.horiz_pos_abs || filterStatus.flags.horiz_pos_rel ||
+                waitingForGpsChecks) {
+                // The EKF is able to provide a position estimate, including
+                // the dead-reckoned one while the GPS re-passes its checks
                 loc.lat = EKF_origin.lat;
                 loc.lng = EKF_origin.lng;
                 loc.offset(outputDataNew.position.x + posOffsetNED.x,
@@ -400,7 +375,7 @@ bool NavEKF3_core::getGPSLLH(Location &loc) const
 void NavEKF3_core::getEkfControlLimits(float &ekfGndSpdLimit, float &ekfNavVelGainScaler) const
 {
     // If in the last 10 seconds we have received flow data and no odometry data, then we are relying on optical flow
-    bool relyingOnFlowData = (imuSampleTime_ms - prevBodyVelFuseTime_ms > 1000)
+    bool relyingOnFlowData = (imuSampleTime_ms - bodyOdm.prevFuseTime_ms > 1000)
             && (imuSampleTime_ms - flowValidMeaTime_ms <= 10000);
 
     // If relying on optical flow, limit speed to prevent sensor limit being exceeded and adjust
@@ -408,8 +383,9 @@ void NavEKF3_core::getEkfControlLimits(float &ekfGndSpdLimit, float &ekfNavVelGa
     if (PV_AidingMode == AID_RELATIVE && relyingOnFlowData) {
         // allow 1.0 rad/sec margin for angular motion
         ekfGndSpdLimit = MAX((frontend->_maxFlowRate - 1.0f), 0.0f) * MAX((terrainState - stateStruct.position[2]), rngOnGnd);
-        // use standard gains up to 5.0 metres height and reduce above that
-        ekfNavVelGainScaler = 4.0f / MAX((terrainState - stateStruct.position[2]),4.0f);
+        // reduce the nav gain above _flowNavGainHgt to allow for flow velocity noise that grows with height
+        const ftype gainHgt = MAX(frontend->_flowNavGainHgt.get(), 1.0f);
+        ekfNavVelGainScaler = gainHgt / MAX((terrainState - stateStruct.position[2]), gainHgt);
     } else {
         ekfGndSpdLimit = 400.0f; //return 80% of max filter speed
         ekfNavVelGainScaler = 1.0f;
@@ -487,7 +463,7 @@ bool NavEKF3_core::getInnovations(Vector3f &velInnov, Vector3f &posInnov, Vector
     magInnov.x = 1e3f*innovMag[0]; // Convert back to sensor units
     magInnov.y = 1e3f*innovMag[1]; // Convert back to sensor units
     magInnov.z = 1e3f*innovMag[2]; // Convert back to sensor units
-    tasInnov   = innovVtas;
+    tasInnov   = tas.innov;
     yawInnov   = innovYaw;
     return true;
 }
@@ -496,8 +472,8 @@ bool NavEKF3_core::getInnovations(Vector3f &velInnov, Vector3f &posInnov, Vector
 void NavEKF3_core::getSynthAirDataInnovations(Vector2f &dragInnov, float &betaInnov) const
 {
 #if EK3_FEATURE_DRAG_FUSION
-    dragInnov.x = innovDrag[0];
-    dragInnov.y = innovDrag[1];
+    dragInnov.x = drag.innov[0];
+    dragInnov.y = drag.innov[1];
     betaInnov   = innovBeta;
 #endif
 }
@@ -514,7 +490,7 @@ bool NavEKF3_core::getVariances(float &velVar, float &posVar, float &hgtVar, Vec
     magVar.x = sqrtF(MAX(magTestRatio.x,yawTestRatio));
     magVar.y = sqrtF(MAX(magTestRatio.y,yawTestRatio));
     magVar.z = sqrtF(MAX(magTestRatio.z,yawTestRatio));
-    tasVar   = sqrtF(tasTestRatio);
+    tasVar   = sqrtF(tas.testRatio);
     offset   = posResetNE.tofloat();
 
     return true;
@@ -553,11 +529,11 @@ bool NavEKF3_core::getVelInnovationsAndVariancesForSource(AP_NavEKF_Source::Sour
 #if EK3_FEATURE_EXTERNAL_NAV
     case AP_NavEKF_Source::SourceXY::EXTNAV:
         // check for timeouts
-        if (dal.millis() - extNavVelInnovTime_ms > 500) {
+        if (dal.millis() - extNav.velInnovTime_ms > 500) {
             return false;
         }
-        innovations = extNavVelInnov.tofloat();
-        variances = extNavVelVarInnov.tofloat();
+        innovations = extNav.velInnov.tofloat();
+        variances = extNav.velVarInnov.tofloat();
         return true;
 #endif // EK3_FEATURE_EXTERNAL_NAV
     case AP_NavEKF_Source::SourceXY::OPTFLOW:

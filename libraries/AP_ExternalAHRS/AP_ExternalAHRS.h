@@ -38,6 +38,7 @@ public:
     friend class AP_ExternalAHRS_VectorNav;
     friend class AP_ExternalAHRS_SensAItion;
     friend class AP_ExternalAHRS_OSCP;
+    friend class AP_ExternalAHRS_Aeron_plx;
 
     AP_ExternalAHRS();
 
@@ -69,7 +70,9 @@ public:
         SBG = 8,
 #endif
         // 9 reserved for EulerNav
-        // 10 reserved for Aeron
+#if AP_EXTERNAL_AHRS_AERON_PLX_ENABLED
+        Aeron = 10,
+#endif  // AP_EXTERNAL_AHRS_AERON_PLX_ENABLED
 #if AP_EXTERNAL_AHRS_SENSAITION_ENABLED
         SensAItion = 11,
 #endif
@@ -187,7 +190,7 @@ public:
 
     // check if a sensor type is enabled
     bool has_sensor(AvailableSensor sensor) const {
-        return (uint16_t(sensors.get()) & uint16_t(sensor)) != 0;
+        return (sensors & uint16_t(sensor)) != 0;
     }
 
 protected:
@@ -205,8 +208,8 @@ private:
     AP_Enum<DevType> devtype;
     AP_Int16         rate;
     AP_Int16         log_rate;
-    AP_Int16         options;
-    AP_Int16         sensors;
+    AP_UInt16        options;
+    AP_UInt16        sensors;
 
     static AP_ExternalAHRS *_singleton;
 

@@ -14,13 +14,25 @@ import vehicle_test_suite
 
 from arducopter import AutoTestCopter
 from pysim import vehicleinfo
+from vehicle_test_suite import AltFrame
 from vehicle_test_suite import AutoTestTimeoutException
+from vehicle_test_suite import Location
 from vehicle_test_suite import NotAchievedException
 
 
 class AutoTestHelicopter(AutoTestCopter):
 
-    sitl_start_loc = mavutil.location(40.072842, -105.230575, 1586, 0)     # Sparkfun AVC Location
+    sitl_start_loc = Location(40.072842, -105.230575, 1586, AltFrame.ABSOLUTE)  # Sparkfun AVC Location
+    sitl_start_heading_deg = 0
+
+    def max_distance_from_startup_location_at_end_of_test(self):
+        # this class inherits ArduCopter's tests but not its
+        # discipline of leaving the vehicle where it started: a heli
+        # which takes off and lands drifts further than a multirotor
+        # (CI measured 2.5m and 3.1m for the takeoff tests), and the
+        # autorotation tests deliberately end well away from the
+        # startup location (110m).
+        return None
 
     def vehicleinfo_key(self):
         return 'Helicopter'
@@ -33,6 +45,9 @@ class AutoTestHelicopter(AutoTestCopter):
 
     def sitl_start_location(self):
         return self.sitl_start_loc
+
+    def sitl_start_heading(self):
+        return self.sitl_start_heading_deg
 
     def is_heli(self):
         return True
@@ -68,7 +83,6 @@ class AutoTestHelicopter(AutoTestCopter):
         '''Test rotor runup'''
         # Takeoff and landing in Loiter
         TARGET_RUNUP_TIME = 10
-        self.zero_throttle()
         self.change_mode('LOITER')
         self.wait_ready_to_arm()
         self.arm_vehicle()
@@ -77,10 +91,10 @@ class AutoTestHelicopter(AutoTestCopter):
         coll = coll + 50
         self.set_parameter("H_RSC_RUNUP_TIME", TARGET_RUNUP_TIME)
         self.progress("Initiate Runup by putting some throttle")
+        tstart = self.get_sim_time()
         self.set_rc(8, 2000)
         self.set_rc(3, 1700)
         self.progress("Collective threshold PWM %u" % coll)
-        tstart = self.get_sim_time()
         self.progress("Wait that collective PWM pass threshold value")
         servo = self.assert_receive_message(
             "SERVO_OUTPUT_RAW",
@@ -88,17 +102,11 @@ class AutoTestHelicopter(AutoTestCopter):
         )
         runup_time = self.get_sim_time() - tstart
         self.progress("Collective is now at PWM %u" % servo.servo1_raw)
-        self.mav.wait_heartbeat()
         if runup_time < TARGET_RUNUP_TIME:
-            self.zero_throttle()
-            self.set_rc(8, 1000)
-            self.disarm_vehicle()
-            self.mav.wait_heartbeat()
             raise NotAchievedException("Takeoff initiated before runup time complete %u" % runup_time)
         self.progress("Runup time %u" % runup_time)
         self.zero_throttle()
         self.land_and_disarm()
-        self.mav.wait_heartbeat()
 
     # fly_avc_test - fly AVC mission
     def AVCMission(self):
@@ -143,12 +151,20 @@ class AutoTestHelicopter(AutoTestCopter):
         self.progress("AVC mission completed: passed!")
 
     def takeoff(self,
-                alt_min=30,
+                altitude_min=30,
                 takeoff_throttle=1700,
                 require_absolute=True,
                 mode="STABILIZE",
-                timeout=120):
-        """Takeoff get to 30m altitude."""
+                timeout=120,
+                altitude_max=None):
+        """Takeoff to at least altitude_min metres above home.
+
+        Beware: in a manual-collective mode such as STABILIZE the
+        vehicle can blow way past altitude_min before the collective is
+        reduced, and unless altitude_max is supplied nothing checks the
+        overshoot.  If your test cares about the altitude the takeoff
+        finishes at, take off in GUIDED.
+        """
         self.progress("TAKEOFF")
         self.change_mode(mode)
         if not self.armed():
@@ -171,10 +187,17 @@ class AutoTestHelicopter(AutoTestCopter):
         self.delay_sim_time(20, reason="rotor runup to complete")
 
         if mode == 'GUIDED':
-            self.user_takeoff(alt_min=alt_min)
+            max_err = 5
+            if altitude_max is not None:
+                max_err = altitude_max - altitude_min
+            self.user_takeoff(alt_min=altitude_min, max_err=max_err)
         else:
             self.set_rc(3, takeoff_throttle)
-        self.wait_altitude(alt_min-1, alt_min+5, relative=True, timeout=timeout)
+        if altitude_max is None:
+            # no limit; a finite stand-in as wait_and_maintain does
+            # arithmetic on the bounds
+            altitude_max = 100000
+        self.wait_altitude(altitude_min-1, altitude_max, relative=True, timeout=timeout)
         self.hover()
         self.progress("TAKEOFF COMPLETE")
 
@@ -196,16 +219,8 @@ class AutoTestHelicopter(AutoTestCopter):
                 self.progress("Actually, no I'm not - it is an external simulation")
                 continue
             model = frame_bits.get("model", frame)
-            # the model string for Callisto has crap in it.... we
-            # should really have another entry in the vehicleinfo data
-            # to carry the path to the JSON.
-            actual_model = model.split(":")[0]
-            defaults = self.model_defaults_filepath(actual_model)
-            if not isinstance(defaults, list):
-                defaults = [defaults]
             self.customise_SITL_commandline(
                 [],
-                defaults_filepath=defaults,
                 model=model,
                 wipe=True,
             )
@@ -216,7 +231,6 @@ class AutoTestHelicopter(AutoTestCopter):
         '''Test Heli Internal Throttle Curve and Governor'''
         self.customise_SITL_commandline(
             [],
-            defaults_filepath=self.model_defaults_filepath('heli-gas'),
             model="heli-gas",
             wipe=True,
         )
@@ -290,7 +304,23 @@ class AutoTestHelicopter(AutoTestCopter):
             wipe=True,
         )
         self.takeoff(10)
-        self.wait_servo_channel_value(4, 1403, timeout=10)
+        self.wait_servo_channel_in_range(7, 1402, 1406, timeout=10)
+        self.do_RTL()
+        # check that battery compensation logic
+        self.set_parameters({
+            "H_DDFP_BAT_V_MAX": 50.4,
+            "H_DDFP_BAT_V_MIN": 39.6,
+            "SIM_BATT_CAP_AH": 5.0,
+            "GCS_PID_MASK": 4.0,
+            "ATC_RAT_YAW_I": 0.00001
+        })
+        self.takeoff(10)
+        self.change_mode("LOITER")
+        self.delay_sim_time(500, reason="allow time for battery to deplete and battery compensation to take effect")
+        m = self.assert_receive_message('PID_TUNING')
+        if m.P > 0.42:
+            raise NotAchievedException("Battery compensation not working")
+        self.set_parameter("ATC_RAT_YAW_I", 0.2)
         self.do_RTL()
 
     def DDVPTail(self):
@@ -760,7 +790,7 @@ class AutoTestHelicopter(AutoTestCopter):
         '''returns a mission which attempts to give the SCurve library
         indigestion.  The same destination is given several times.'''
 
-        wp2_loc = self.mav.location()
+        wp2_loc = self.get_location()
         wp2_offset_n = 20
         wp2_offset_e = 30
         self.location_offset_ne(wp2_loc, wp2_offset_n, wp2_offset_e)
@@ -782,7 +812,7 @@ class AutoTestHelicopter(AutoTestCopter):
             31.0000, # altitude
             mavutil.mavlink.MAV_MISSION_TYPE_MISSION)
 
-        wp5_loc = self.mav.location()
+        wp5_loc = self.get_location()
         wp5_offset_n = -20
         wp5_offset_e = 30
         self.location_offset_ne(wp5_loc, wp5_offset_n, wp5_offset_e)
@@ -826,7 +856,7 @@ class AutoTestHelicopter(AutoTestCopter):
         '''returns a mission which attempts to give the SCurve library
         indigestion.  The same destination is given several times but with differing altitudes.'''
 
-        wp2_loc = self.mav.location()
+        wp2_loc = self.get_location()
         wp2_offset_n = 20
         wp2_offset_e = 30
         self.location_offset_ne(wp2_loc, wp2_offset_n, wp2_offset_e)
@@ -852,7 +882,7 @@ class AutoTestHelicopter(AutoTestCopter):
         wp4 = copy.copy(wp2)
         wp4.alt = 31
 
-        wp5_loc = self.mav.location()
+        wp5_loc = self.get_location()
         wp5_offset_n = -20
         wp5_offset_e = 30
         self.location_offset_ne(wp5_loc, wp5_offset_n, wp5_offset_e)
@@ -989,8 +1019,13 @@ class AutoTestHelicopter(AutoTestCopter):
             "ARSPD_PIN": 1,      # Analog airspeed driver pin for SITL
         })
         # set the start location to CMAC to use same test script as other vehicles
-
-        self.sitl_start_loc = mavutil.location(-35.362881, 149.165222, 582.000000, 90.0)   # CMAC
+        # sitl_start_location() returns this for the rest of the session,
+        # so every later start_SITL() would come up at CMAC rather than
+        # at the heli's own start location; put it back afterwards.
+        self.context_preserve_attribute("sitl_start_loc")
+        self.context_preserve_attribute("sitl_start_heading_deg")
+        self.sitl_start_loc = Location(-35.362881, 149.165222, 582.000000, AltFrame.ABSOLUTE)   # CMAC
+        self.sitl_start_heading_deg = 90.0
         self.customise_SITL_commandline(["--home", "%s,%s,%s,%s"
                                          % (-35.362881, 149.165222, 582.000000, 90.0)])
 
@@ -1361,8 +1396,7 @@ class AutoTestHelicopter(AutoTestCopter):
         tstart = self.get_sim_time()
         try:
             while self.get_sim_time_cached() - tstart < timeout:
-                self.wait_heartbeat()
-                if self.armed():
+                if self.armed(poll=False):
                     raise NotAchievedException("Stick-armed when it should not have")
         finally:
             self.set_output_to_trim(arming_channel)

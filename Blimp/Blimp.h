@@ -115,9 +115,6 @@ private:
     // Arming/Disarming management class
     AP_Arming_Blimp arming;
 
-    // system time in milliseconds of last recorded yaw reset from ekf
-    uint32_t ekfYawReset_ms;
-
     // vibration check
     struct {
         bool high_vibes;    // true while high vibration are detected
@@ -293,7 +290,6 @@ private:
     bool ekf_over_threshold();
     void failsafe_ekf_event();
     void failsafe_ekf_off_event(void);
-    void check_ekf_reset();
     void check_vibration();
 
     // events.cpp
@@ -325,7 +321,7 @@ private:
 
 #if HAL_LOGGING_ENABLED
     // methods for AP_Vehicle:
-    const AP_Int32 &get_log_bitmask() override { return g.log_bitmask; }
+    const AP_UInt32 &get_log_bitmask() override { return g.log_bitmask; }
     const struct LogStructure *get_log_structures() const override {
         return log_structure;
     }

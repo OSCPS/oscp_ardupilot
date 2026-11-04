@@ -25,11 +25,22 @@ void AP_AHRS_External::get_results(AP_AHRS_Backend::Estimates &results)
     results.primary_accel = _ins.get_first_usable_accel();
 #endif  // AP_INERTIALSENSOR_ENABLED
 
-    if (!extahrs.get_quaternion(results.quaternion)) {
-        results.attitude_valid = false;
-        return;
-    }
-    results.attitude_valid = true;
+    // no limit on gains, large vel limit
+    results.control_ground_speed_limit_ms = 400.0;
+    results.control_gain_scaler_XY = 1;
+    results.control_gain_scaler_Z = 1;
+
+    // control height is never limited:
+    // results.control_height_limit_valid = false;
+    // results.control_height_limit_m = 0;
+
+#if AP_AIRSPEED_ENABLED
+    // External may or may not be using this sensor; we don't
+    // currently have this information:
+    results.active_airspeed_index = primary_airspeed_index();
+#endif  // AP_AIRSPEED_ENABLED
+
+    results.attitude_valid = extahrs.get_quaternion(results.quaternion);
     results.quaternion.rotation_matrix(results.dcm_matrix);
     results.dcm_matrix.to_euler(&results.roll_rad, &results.pitch_rad, &results.yaw_rad);
 
@@ -132,6 +143,9 @@ void AP_AHRS_External::get_results(AP_AHRS_Backend::Estimates &results)
 
     results.terrain_alt_variance = 0;
     results.terrain_alt_variance_valid = true;
+
+    // publish this backend's airspeed estimate from the results above:
+    fill_airspeed_estimate(results);
 }
 
 bool AP_AHRS_External::pre_arm_check(bool requires_position, char *failure_msg, uint8_t failure_msg_len) const
@@ -147,13 +161,6 @@ bool AP_AHRS_External::get_origin(Location &ret) const
 bool AP_AHRS_External::set_origin(const Location &loc)
 {
     return AP::externalAHRS().set_origin(loc);
-}
-
-void AP_AHRS_External::get_control_limits(float &ekfGndSpdLimit, float &ekfNavVelGainScaler) const
-{
-    // no limit on gains, large vel limit
-    ekfGndSpdLimit = 400.0;
-    ekfNavVelGainScaler = 1;
 }
 
 #endif

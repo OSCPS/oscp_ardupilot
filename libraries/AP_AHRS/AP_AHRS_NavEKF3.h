@@ -47,6 +47,10 @@ public:
         started = EKF3.InitialiseFilter();
     }
 
+    // EKF3 uses the magnitude of its own air-relative velocity, matching
+    // its historical synthetic airspeed:
+    bool synthetic_airspeed_EAS(const Estimates &results, float &airspeed_ret, AirspeedEstimateType &type) override;
+
     bool get_origin(Location &ret) const override {
         return EKF3.getOriginLLH(ret);
     }
@@ -58,18 +62,12 @@ public:
         return EKF3.use_compass();
     }
 
-    uint32_t getLastYawResetAngle(float &yawAng) override {
-        return EKF3.getLastYawResetAngle(yawAng);
-    };
-    uint32_t getLastPosNorthEastReset(Vector2f &pos) override WARN_IF_UNUSED {
-        return EKF3.getLastPosNorthEastReset(pos);
-    };
-    uint32_t getLastVelNorthEastReset(Vector2f &vel) const override WARN_IF_UNUSED {
-        return EKF3.getLastVelNorthEastReset(vel);
-    };
-    uint32_t getLastPosDownReset(float &posDelta) override WARN_IF_UNUSED {
-        return EKF3.getLastPosDownReset(posDelta);
-    };
+#if AP_COMPASS_LEARN_COPY_FROM_EKF_ENABLED
+    bool get_mag_offsets(uint8_t mag_idx, Vector3f &magOffsets) const override {
+        return EKF3.getMagOffsets(mag_idx, magOffsets);
+    }
+#endif  // AP_COMPASS_LEARN_COPY_FROM_EKF_ENABLED
+
     void resetHeightDatum(void) override {
         EKF3.resetHeightDatum();
     }
@@ -81,10 +79,6 @@ public:
     }
 
     bool pre_arm_check(bool requires_position, char *failure_msg, uint8_t failure_msg_len) const override;
-
-    void get_control_limits(float &ekfGndSpdLimit, float &controlScaleXY) const override {
-        return EKF3.getEkfControlLimits(ekfGndSpdLimit, controlScaleXY);
-    }
 
     // return the innovations for the specified instance
     // An out of range instance (eg -1) returns data for the primary instance
@@ -100,8 +94,11 @@ public:
     uint32_t start_time_ms;  // timer used to delay starting the filter
 
     // a counter which is incremented each time the primary core changes:
-    uint16_t attitude_reset_count;
-    int8_t old_primary_core;
+    AP_AHRS_ResetCounter<int8_t> attitude_reset_tracker;
+
+    AP_AHRS_ResetCounter<uint16_t> yaw_reset_tracker;
+    AP_AHRS_ResetCounter<uint16_t> position_NE_reset_tracker;
+    AP_AHRS_ResetCounter<uint16_t> position_D_reset_tracker;
 };
 
 #endif  // AP_AHRS_NAVEKF3_ENABLED

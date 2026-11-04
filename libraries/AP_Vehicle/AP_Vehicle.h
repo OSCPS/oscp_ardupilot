@@ -125,7 +125,7 @@ public:
     void loop() override final;
 
     // set_mode *must* set control_mode_reason
-    virtual bool set_mode(const uint8_t new_mode, const ModeReason reason) = 0;
+    virtual bool set_mode(const uint8_t new_mode, const ModeReason reason) WARN_IF_UNUSED = 0;
     virtual uint8_t get_mode() const = 0;
 
     ModeReason get_control_mode_reason() const {
@@ -273,12 +273,17 @@ public:
     // returns true if vehicle is in the process of taking off
     virtual bool is_taking_off() const { return false; }
 
-    // zeroing the RC outputs can prevent unwanted motor movement:
-    virtual bool should_zero_rc_outputs_on_reboot() const { return false; }
-
     // reboot the vehicle in an orderly manner, doing various cleanups
     // and flashing LEDs as appropriate
     void reboot(bool hold_in_bootloader);
+
+#if AP_POWEROFF_ENABLED
+    void poweroff_start();
+    void poweroff();
+
+    // true if a delayed power off has been started
+    bool poweroff_pending() const;
+#endif // AP_POWEROFF_ENABLED
 
     /*
       get the distance to next wp in meters
@@ -312,8 +317,8 @@ public:
      */
     virtual bool get_pan_tilt_norm(float &pan_norm, float &tilt_norm) const { return false; }
 
-    // Returns roll and  pitch for OSD Horizon, Plane overrides to correct for VTOL view and fixed wing PTCH_TRIM_DEG
-    virtual void get_osd_roll_pitch_rad(float &roll, float &pitch) const;
+    // Returns roll, pitch, and yaw for OSD Horizon, Plane overrides to correct for VTOL view and fixed wing PTCH_TRIM_DEG
+    virtual void get_osd_attitude_rad(float &roll, float &pitch, float &yaw);
 
     /*
      get the target earth-frame angular velocities in rad/s (Z-axis component used by some gimbals)
@@ -370,9 +375,9 @@ protected:
 
 #if HAL_LOGGING_ENABLED
     AP_Logger logger;
-    AP_Int32 bitmask_unused;
+    AP_UInt32 bitmask_unused;
     // method supplied by vehicle to provide log bitmask:
-    virtual const AP_Int32 &get_log_bitmask() { return bitmask_unused; }
+    virtual const AP_UInt32 &get_log_bitmask() { return bitmask_unused; }
     virtual const struct LogStructure *get_log_structures() const { return nullptr; }
     virtual uint8_t get_num_log_structures() const { return 0; }
 #endif
@@ -577,7 +582,7 @@ protected:
 #endif // AP_INERTIALSENSOR_HARMONICNOTCH_ENABLED
 
     // Bitmask of modes to disable from gcs
-    AP_Int32 flight_mode_GCS_block;
+    AP_UInt32 flight_mode_GCS_block;
 
 private:
 
@@ -625,6 +630,12 @@ private:
     AP_Filters filters;
 #endif
 
+#if AP_POWEROFF_ENABLED
+    void poweroff_update();
+#if AP_POWEROFF_DELAY_MS
+    uint32_t _poweroff_start_ms;
+#endif // AP_POWEROFF_DELAY_MS
+#endif // AP_POWEROFF_ENABLED
 };
 
 namespace AP {

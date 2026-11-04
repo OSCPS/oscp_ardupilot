@@ -11,14 +11,15 @@
 #include <AP_Frsky_Telem/AP_Frsky_Parameters.h>
 #include <AP_Logger/AP_Logger.h>
 #include <AP_Mission/AP_Mission.h>
+#include <AP_Mount/AP_Mount.h>
 #include <AP_OSD/AP_OSD.h>
 #include <SRV_Channel/SRV_Channel.h>
 #include <AP_Motors/AP_Motors.h>
 #include <AR_Motors/AP_MotorsUGV.h>
 #include <AP_CheckFirmware/AP_CheckFirmware.h>
 #include <GCS_MAVLink/GCS.h>
+#include <AP_Filesystem/AP_Filesystem.h>
 #if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
-#include <AP_HAL_ChibiOS/sdcard.h>
 #include <AP_HAL_ChibiOS/hwdef/common/stm32_util.h>
 #endif
 #include <AP_DDS/AP_DDS_Client.h>
@@ -335,11 +336,18 @@ void AP_Vehicle::setup()
     AP_Param::check_var_info();
     load_parameters();
 
-#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
+#if HAL_MOUNT_ENABLED
+    if (AP::mount() != nullptr) {
+        AP::mount()->convert_params();
+    }
+#endif
+
+#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS && AP_FILESYSTEM_FATFS_ENABLED
     if (AP_BoardConfig::get_sdcard_slowdown() != 0) {
-        // user wants the SDcard slower, we need to remount
-        sdcard_stop();
-        sdcard_retry();
+        // user wants the SDcard slower, we need to remount. Go via
+        // AP_Filesystem so we hold its semaphore against the io thread
+        AP::FS().unmount();
+        AP::FS().retry_mount();
     }
 #endif
 
@@ -599,6 +607,10 @@ void AP_Vehicle::loop()
         GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Internal Errors 0x%x", (unsigned)new_internal_errors);
         _last_internal_errors = new_internal_errors;
     }
+
+#if AP_POWEROFF_ENABLED
+    poweroff_update();
+#endif // AP_POWEROFF_ENABLED
 }
 
 #if AP_SCHEDULER_ENABLED
@@ -894,14 +906,14 @@ void AP_Vehicle::update_dynamic_notch(AP_InertialSensor::HarmonicNotch &notch)
             if (notch.params.hasOption(HarmonicNotchFilterParams::Options::DynamicHarmonic)) {
                 float notches[INS_MAX_NOTCHES];
                 // ESC telemetry will return 0 for missing data, but only after 1s
-                const uint8_t num_notches = AP::esc_telem().get_motor_frequencies_hz(INS_MAX_NOTCHES, notches);
+                const uint8_t num_notches = AP::esc_telem().get_motor_frequencies_hz(INS_MAX_NOTCHES, notches, notch.params.esc_mask());
                 if (num_notches > 0) {
                     notch.update_frequencies_hz(num_notches, notches);
                 } else {    // throttle fallback
                     update_throttle_notch(notch);
                 }
             } else {
-                notch.update_freq_hz(AP::esc_telem().get_average_motor_frequency_hz() * ref);
+                notch.update_freq_hz(AP::esc_telem().get_average_motor_frequency_hz(notch.params.esc_mask()) * ref);
             }
             break;
 #endif
@@ -957,13 +969,74 @@ void AP_Vehicle::notify_no_such_mode(uint8_t mode_number)
     LOGGER_WRITE_ERROR(LogErrorSubsystem::FLIGHT_MODE, LogErrorCode(mode_number));
 }
 
+#if AP_POWEROFF_ENABLED
+void AP_Vehicle::poweroff_update()
+{
+#if AP_POWEROFF_DELAY_MS
+    if (_poweroff_start_ms == 0) {
+        return;
+    }
+    if (AP_HAL::millis() - _poweroff_start_ms < AP_POWEROFF_DELAY_MS) {
+        return;
+    }
+    poweroff();
+#endif // AP_POWEROFF_DELAY_MS
+}
+
+void AP_Vehicle::poweroff()
+{
+#ifdef AP_POWER_CONTROL_GPIO
+    hal.gpio->write(AP_POWER_CONTROL_GPIO, AP_POWER_CONTROL_GPIO_VALUE_OFF);
+#else
+#error AP_POWEROFF_ENABLED but no mechanism to power off
+#endif // AP_POWER_CONTROL_GPIO
+}
+
+void AP_Vehicle::poweroff_start()
+{
+#if defined(AP_POWEROFF_DELAY_MS) && AP_POWEROFF_DELAY_MS != 0
+    if (poweroff_pending()) {
+        // Poweroff already in progress
+        return;
+    }
+    _poweroff_start_ms = AP_HAL::millis();
+
+    // Disable servo outputs
+    SRV_Channels::prepare_for_reboot();
+    hal.rcout->force_safety_on();
+
+    // flush pending parameter writes
+    AP_Param::flush();
+
+#ifndef HAL_BUILD_AP_PERIPH
+    // Set the AP_Notify flag, which plays the power off tones
+    AP_Notify::flags.powering_off = true;
+#endif // HAL_BUILD_AP_PERIPH
+
+#if HAL_GCS_ENABLED
+    gcs().poweroff_initiated(0, "Vehicle powering off");
+#endif // HAL_GCS_ENABLED
+
+#else // AP_POWEROFF_DELAY_MS not set - power off immediately
+    poweroff();
+#endif // defined(AP_POWEROFF_DELAY_MS) && AP_POWEROFF_DELAY_MS != 0
+}
+
+bool AP_Vehicle::poweroff_pending() const
+{
+#if AP_POWEROFF_DELAY_MS
+    return _poweroff_start_ms != 0;
+#else
+    return false;
+#endif // AP_POWEROFF_DELAY_MS
+}
+#endif // AP_POWEROFF_ENABLED
+
 // reboot the vehicle in an orderly manner, doing various cleanups and
 // flashing LEDs as appropriate
 void AP_Vehicle::reboot(bool hold_in_bootloader)
 {
-    if (should_zero_rc_outputs_on_reboot()) {
-        SRV_Channels::zero_rc_outputs();
-    }
+    SRV_Channels::prepare_for_reboot();
 
     // Notify might want to blink some LEDs:
     AP_Notify::flags.firmware_update = 1;
@@ -998,10 +1071,6 @@ void AP_Vehicle::reboot(bool hold_in_bootloader)
 void AP_Vehicle::publish_osd_info()
 {
 #if AP_MISSION_ENABLED
-    AP_Mission *mission = AP::mission();
-    if (mission == nullptr) {
-        return;
-    }
     AP_OSD *osd = AP::osd();
     if (osd == nullptr) {
         return;
@@ -1018,20 +1087,25 @@ void AP_Vehicle::publish_osd_info()
     if (!get_wp_crosstrack_error_m(nav_info.wp_xtrack_error)) {
         return;
     }
-    nav_info.wp_number = mission->get_current_nav_index();
+    nav_info.wp_number = AP::mission().get_current_nav_index();
     osd->set_nav_info(nav_info);
 #endif
 }
 #endif
 
-void AP_Vehicle::get_osd_roll_pitch_rad(float &roll, float &pitch) const
+void AP_Vehicle::get_osd_attitude_rad(float &roll, float &pitch, float &yaw)
 {
 #if AP_AHRS_ENABLED
+    // Take semaphore as this can be called from a thread
+    WITH_SEMAPHORE(ahrs.get_semaphore());
+
     roll = ahrs.get_roll_rad();
     pitch = ahrs.get_pitch_rad();
+    yaw = ahrs.get_yaw_rad();
 #else
     roll = 0.0;
     pitch = 0.0;
+    yaw = 0.0;
 #endif
 }
 
@@ -1146,7 +1220,7 @@ void AP_Vehicle::check_motor_noise()
 #endif
 
     float esc_data[ESC_TELEM_MAX_ESCS];
-    const uint8_t numf = AP::esc_telem().get_motor_frequencies_hz(ESC_TELEM_MAX_ESCS, esc_data);
+    const uint8_t numf = AP::esc_telem().get_motor_frequencies_hz(ESC_TELEM_MAX_ESCS, esc_data, 0xFFFFFFFF);
     bool output_error = false;
 
     for (uint8_t i = 0; i<numf; i++) {
@@ -1231,7 +1305,7 @@ bool AP_Vehicle::block_GCS_mode_change(uint8_t mode_num, const uint8_t *mode_lis
         // Find index of mode
         if (mode_list[i] == mode_num) {
             const uint32_t mask = 1U << i;
-            return (uint32_t(flight_mode_GCS_block) & mask) != 0;
+            return (flight_mode_GCS_block & mask) != 0;
         }
     }
 

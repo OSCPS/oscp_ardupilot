@@ -164,7 +164,7 @@ const AP_Scheduler::Task Copter::scheduler_tasks[] = {
 #endif
     SCHED_TASK(auto_disarm_check,     10,     50,  27),
 #if AP_COPTER_AHRS_AUTO_TRIM_ENABLED
-    SCHED_TASK_CLASS(RC_Channels_Copter,   &copter.g2.rc_channels,      auto_trim_run,   10,  75,  30),
+    SCHED_TASK_CLASS(AHRSTrimming,       &copter.ahrs_trimming,       auto_run,        10,  75,  30),
 #endif
 #if AP_RANGEFINDER_ENABLED
     SCHED_TASK(read_rangefinder,      20,    100,  33),
@@ -609,7 +609,9 @@ void Copter::throttle_loop()
 #endif
 
     // compensate for ground effect (if enabled)
+#if AP_GROUNDEFFECT_ENABLED
     update_ground_effect_detector();
+#endif
     update_ekf_terrain_height_stable();
 }
 
@@ -848,39 +850,6 @@ void Copter::init_simple_bearing()
         Log_Write_Data(LogDataID::INIT_SIMPLE_BEARING, ahrs.yaw_sensor);
     }
 #endif
-}
-
-// update_simple_mode - rotates pilot input if we are in simple mode
-void Copter::update_simple_mode(void)
-{
-    float rollx, pitchx;
-
-    // exit immediately if no new radio frame or not in simple mode
-    if (simple_mode == SimpleMode::NONE || !ap.new_radio_frame) {
-        return;
-    }
-
-    // mark radio frame as consumed
-    ap.new_radio_frame = false;
-
-    // avoid processing bind-time RC values:
-    if (!rc().has_valid_input()) {
-        return;
-    }
-
-    if (simple_mode == SimpleMode::SIMPLE) {
-        // rotate roll, pitch input by -initial simple heading (i.e. north facing)
-        rollx = channel_roll->get_control_in()*simple_cos_yaw - channel_pitch->get_control_in()*simple_sin_yaw;
-        pitchx = channel_roll->get_control_in()*simple_sin_yaw + channel_pitch->get_control_in()*simple_cos_yaw;
-    }else{
-        // rotate roll, pitch input by -super simple heading (reverse of heading to home)
-        rollx = channel_roll->get_control_in()*super_simple_cos_yaw - channel_pitch->get_control_in()*super_simple_sin_yaw;
-        pitchx = channel_roll->get_control_in()*super_simple_sin_yaw + channel_pitch->get_control_in()*super_simple_cos_yaw;
-    }
-
-    // rotate roll, pitch input from north facing to vehicle's perspective
-    channel_roll->set_control_in(rollx*ahrs.cos_yaw() + pitchx*ahrs.sin_yaw());
-    channel_pitch->set_control_in(-rollx*ahrs.sin_yaw() + pitchx*ahrs.cos_yaw());
 }
 
 // update_super_simple_bearing - adjusts simple bearing based on location

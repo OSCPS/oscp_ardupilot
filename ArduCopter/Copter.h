@@ -151,6 +151,10 @@
 #include <AC_CustomControl/AC_CustomControl.h>                  // Custom control library
 #endif
 
+#if MODE_BRAKE_ENABLED && !MODE_ALTHOLD_ENABLED
+  #error Brake mode requires AltHold; disable MODE_BRAKE_ENABLED or enable MODE_ALTHOLD_ENABLED
+#endif
+
 #if AP_AVOIDANCE_ENABLED && !AP_FENCE_ENABLED
   #error AC_Avoidance relies on AP_FENCE_ENABLED which is disabled
 #endif
@@ -310,8 +314,8 @@ private:
 #endif
 
 
-    // system time in milliseconds of last recorded yaw reset from ekf
-    uint32_t ekfYawReset_ms;
+    // old value of counter which increments when our yaw estimate is reset
+    uint16_t ahrs_yaw_reset_count;
     // old value of counter which increments when our attitude estimate is reset
     uint16_t attitude_reset_count;
 
@@ -359,7 +363,7 @@ private:
         bool auto_armed;                     //  5 stops auto missions from beginning until throttle is raised
         bool unused_log_started;             //  6
         bool land_complete;                  //  7 true if we have detected a landing
-        bool new_radio_frame;                //  8 Set true if we have new PWM data to act on from the Radio
+        bool unused_new_radio_frame;         //  8
         bool unused_usb_connected;           //  9
         bool unused_receiver_present;        // 10
         bool compass_mot;                    // 11 true if we are currently performing compassmot calibration
@@ -382,6 +386,12 @@ private:
 
     AirMode air_mode; // air mode is 0 = not-configured ; 1 = disabled; 2 = enabled;
     bool force_flying; // force flying is enabled when true;
+
+    // true if air-mode should be honoured; either it was turned on
+    // explicitly, or we armed with an arming switch which implies it:
+    bool air_mode_active() const {
+        return air_mode == AirMode::AIRMODE_ENABLED || ap.armed_with_airmode_switch;
+    }
 
     // This is the state of the flight control system
     // There are multiple states defined such as STABILIZE, ACRO,
@@ -570,14 +580,6 @@ private:
     int16_t hover_roll_trim_scalar_slew;
 #endif
 
-    // ground effect detector
-    struct {
-        bool takeoff_expected;
-        bool touchdown_expected;
-        uint32_t takeoff_time_ms;
-        float takeoff_alt_m;
-    } gndeffect_state;
-
     bool standby_active;
 
     static const AP_Scheduler::Task scheduler_tasks[];
@@ -712,7 +714,6 @@ private:
     void three_hz_loop();
     void one_hz_loop();
     void init_simple_bearing();
-    void update_simple_mode(void);
     void update_super_simple_bearing(bool force_update);
     void read_AHRS(void);
     void update_altitude();
@@ -756,6 +757,20 @@ private:
     void run_custom_controller() { custom_control.update(); }
 #endif
 
+    // support for trimming AHRS using RC stick inputs, enabled via an
+    // aux function.  Also support for auto-trimming AHRS via
+    // controller outputs.
+    struct AHRSTrimming {
+#if AP_COPTER_AHRS_AUTO_TRIM_ENABLED
+        void auto_start();
+        void auto_stop();
+        void auto_run();
+        void auto_cancel();
+        bool running;
+#endif  // AP_COPTER_AHRS_AUTO_TRIM_ENABLED
+        void save_trim();
+    } ahrs_trimming;
+
     // avoidance.cpp
     void low_alt_avoidance();
 
@@ -765,7 +780,9 @@ private:
 #endif  // HAL_ADSB_ENABLED || AP_ADSB_AVOIDANCE_ENABLED
 
     // baro_ground_effect.cpp
+#if AP_GROUNDEFFECT_ENABLED
     void update_ground_effect_detector(void);
+#endif
     void update_ekf_terrain_height_stable();
 
     // commands.cpp
@@ -776,6 +793,7 @@ private:
 
     // compassmot.cpp
     MAV_RESULT mavlink_compassmot(const GCS_MAVLINK &gcs_chan);
+    void compassmot_output();
 
     // crash_check.cpp
     void crash_check();
@@ -870,9 +888,9 @@ private:
         DESCENT_RATE_LOW     = 1U <<  6,
         ACCEL_STATIONARY     = 1U <<  7,
         LARGE_ANGLE_ERROR    = 1U <<  8,
-        LARGE_ANGLE_REQUEST  = 1U <<  8,
         MOTOR_AT_LOWER_LIMIT = 1U <<  9,
         THROTTLE_MIX_AT_MIN  = 1U << 10,
+        LARGE_ANGLE_REQUEST  = 1U << 11,
     };
     struct {
         uint32_t last_logged_ms;
@@ -892,7 +910,7 @@ private:
 
 #if HAL_LOGGING_ENABLED
     // methods for AP_Vehicle:
-    const AP_Int32 &get_log_bitmask() override { return g.log_bitmask; }
+    const AP_UInt32 &get_log_bitmask() override { return g.log_bitmask; }
     const struct LogStructure *get_log_structures() const override {
         return log_structure;
     }
@@ -959,10 +977,6 @@ private:
 
     // Parameters.cpp
     void load_parameters(void) override;
-    void convert_pid_parameters(void);
-#if HAL_PROXIMITY_ENABLED
-    void convert_prx_parameters();
-#endif
 
     // precision_landing.cpp
     void init_precland();
@@ -1031,7 +1045,9 @@ private:
     ModeAcro mode_acro;
 #endif
 #endif
+#if MODE_ALTHOLD_ENABLED
     ModeAltHold mode_althold;
+#endif
 #if MODE_AUTO_ENABLED
     ModeAuto mode_auto;
 #endif

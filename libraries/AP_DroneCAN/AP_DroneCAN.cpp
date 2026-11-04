@@ -1042,7 +1042,6 @@ void AP_DroneCAN::notify_state_send()
         msg.vehicle_state |= 1 << ARDUPILOT_INDICATION_NOTIFYSTATE_VEHICLE_STATE_THROW_READY;
     }
 
-#ifndef HAL_BUILD_AP_PERIPH
     const AP_Vehicle* vehicle = AP::vehicle();
     if (vehicle != nullptr) {
         if (vehicle->is_landing()) {
@@ -1052,7 +1051,6 @@ void AP_DroneCAN::notify_state_send()
             msg.vehicle_state |= 1 << ARDUPILOT_INDICATION_NOTIFYSTATE_VEHICLE_STATE_IS_TAKING_OFF;
         }
     }
-#endif // HAL_BUILD_AP_PERIPH
 
     // beware that
     // ARDUPILOT_INDICATION_NOTIFYSTATE_VEHICLE_YAW_EARTH_CENTIDEGREES
@@ -1407,6 +1405,61 @@ void AP_DroneCAN::handle_actuator_status(const CanardRxTransfer& transfer, const
 }
 #endif
 
+#if AP_SERVO_TELEM_ENABLED || AP_DRONECAN_LOG_CIRCUIT_STATUS_ENABLED
+/*
+    handle circuit status message
+*/
+void AP_DroneCAN::handle_circuit_status(const CanardRxTransfer& transfer, const uavcan_equipment_power_CircuitStatus& msg)
+{
+#if AP_SERVO_TELEM_ENABLED
+    if (msg.circuit_id >= 1 && msg.circuit_id <= DRONECAN_SRV_NUMBER &&
+        (_servo_bm & (1U << (msg.circuit_id - 1)))) {
+        // circuit_id maps to a channel we are driving as a DroneCAN servo,
+        // route into AP_Servo_Telem so it is logged alongside other servo telemetry
+        const uint8_t servo_index = msg.circuit_id - 1;
+
+        AP_Servo_Telem *servo_telem = AP_Servo_Telem::get_singleton();
+        if (servo_telem != nullptr && servo_telem->is_active(servo_index)) {
+            const AP_Servo_Telem::TelemetryData telem_data {
+                .voltage = msg.voltage,
+                .current = msg.current,
+                .status_flags = msg.error_flags,
+                .present_types = AP_Servo_Telem::TelemetryData::Types::VOLTAGE |
+                                 AP_Servo_Telem::TelemetryData::Types::CURRENT |
+                                 AP_Servo_Telem::TelemetryData::Types::STATUS
+            };
+            servo_telem->update_telem_data(servo_index, telem_data);
+        }
+        return;
+    }
+#endif  // AP_SERVO_TELEM_ENABLED
+
+#if AP_DRONECAN_LOG_CIRCUIT_STATUS_ENABLED && HAL_LOGGING_ENABLED
+    if (AP::logger().logging_enabled()) {
+// @LoggerMessage: CSCU
+// @Description: Generic DroneCAN circuit status
+// @Field: TimeUS: Time since system startup
+// @Field: I: driver index
+// @Field: Id: circuit id
+// @Field: V: Voltage
+// @Field: A: Current
+// @Field: Err: error flags
+        AP::logger().WriteStreaming("CSCU",
+                                    "TimeUS,I,Id,V,A,Err",
+                                    "s#-vA-",
+                                    "F-----",
+                                    "QBHffB",
+                                    AP_HAL::micros64(),
+                                    _driver_index,
+                                    msg.circuit_id,
+                                    msg.voltage,
+                                    msg.current,
+                                    msg.error_flags);
+    }
+#endif // AP_DRONECAN_LOG_CIRCUIT_STATUS_ENABLED && HAL_LOGGING_ENABLED
+}
+#endif // AP_SERVO_TELEM_ENABLED || AP_DRONECAN_LOG_CIRCUIT_STATUS_ENABLED
+
 #if AP_DRONECAN_HIMARK_SERVO_SUPPORT && AP_SERVO_TELEM_ENABLED
 /*
   handle himark ServoInfo message
@@ -1435,7 +1488,8 @@ void AP_DroneCAN::handle_himark_servoinfo(const CanardRxTransfer& transfer, cons
                          AP_Servo_Telem::TelemetryData::Types::STATUS
     };
 
-    servo_telem->update_telem_data(msg.servo_id - 1, telem_data);
+    // servo_id is zero indexed, matching its position in the ServoCmd array sent by SRV_send_himark
+    servo_telem->update_telem_data(msg.servo_id, telem_data);
 }
 #endif // AP_DRONECAN_HIMARK_SERVO_SUPPORT
 
@@ -1920,7 +1974,7 @@ bool AP_DroneCAN::check_and_reset_option(Options option)
 {
     bool ret = option_is_set(option);
     if (ret) {
-        _options.set_and_save(int16_t(_options.get() & ~uint16_t(option)));
+        _options.set_and_save(_options & ~uint16_t(option));
     }
     return ret;
 }
@@ -2015,4 +2069,4 @@ bool AP_DroneCAN::write_aux_frame(AP_HAL::CANFrame &out_frame, const uint32_t ti
     return canard_iface.write_aux_frame(out_frame, timeout_us);
 }
 
-#endif // HAL_NUM_CAN_IFACES
+#endif // HAL_ENABLE_DRONECAN_DRIVERS

@@ -251,17 +251,6 @@ MAV_RESULT GCS_MAVLINK_Blimp::handle_command_int_packet(const mavlink_command_in
     }
 }
 
-#if AP_MAVLINK_COMMAND_LONG_ENABLED
-bool GCS_MAVLINK_Blimp::mav_frame_for_command_long(MAV_FRAME &frame, MAV_CMD packet_command) const
-{
-    if (packet_command == MAV_CMD_NAV_TAKEOFF) {
-        frame = MAV_FRAME_GLOBAL_RELATIVE_ALT;
-        return true;
-    }
-    return GCS_MAVLINK::mav_frame_for_command_long(frame, packet_command);
-}
-#endif
-
 void GCS_MAVLINK_Blimp::handle_message(const mavlink_message_t &msg)
 {
     switch (msg.msgid) {
@@ -326,7 +315,10 @@ void GCS_MAVLINK_Blimp::send_wind() const
         // valid wind estimate on blimps
         return;
     }
-    const Vector3f wind = AP::ahrs().wind_estimate();
+    Vector3f wind;
+    // send the estimate even if it is not marked valid, to preserve
+    // existing behaviour
+    IGNORE_RETURN(AP::ahrs().get_wind(wind));
     mavlink_msg_wind_send(
         chan,
         degrees(atan2f(-wind.y, -wind.x)),
@@ -344,7 +336,10 @@ uint8_t GCS_MAVLINK_Blimp::high_latency_wind_speed() const
         return 0;
     }
     // return units are m/s*5
-    const Vector3f wind = AP::ahrs().wind_estimate();
+    Vector3f wind;
+    // use the estimate even if it is not marked valid, to preserve
+    // existing behaviour
+    IGNORE_RETURN(AP::ahrs().get_wind(wind));
     return wind.xy().length() * 5;
 }
 
@@ -356,7 +351,10 @@ uint8_t GCS_MAVLINK_Blimp::high_latency_wind_direction() const
         // valid wind estimate on blimps
         return 0;
     }
-    const Vector3f wind = AP::ahrs().wind_estimate();
+    Vector3f wind;
+    // use the estimate even if it is not marked valid, to preserve
+    // existing behaviour
+    IGNORE_RETURN(AP::ahrs().get_wind(wind));
     // need to convert -180->180 to 0->360/2
     return wrap_360(degrees(atan2f(-wind.y, -wind.x))) / 2;
 }

@@ -703,7 +703,7 @@ void Plane::apply_load_factor_roll_limits(void)
         // no roll limits when inverted
         return;
     }
-#if HAL_QUADPLANE_ENABLED
+#if AP_PLANE_TAILSITTER_ENABLED
     if (quadplane.tailsitter.active()) {
         // no limits while hovering
         return;
@@ -763,12 +763,10 @@ void Plane::check_ahrs_reset()
     bool should_reset = false;
 
     // Check for yaw reset
-    float yaw_angle_change_rad;
-    const uint32_t yaw_reset_ms = ahrs.getLastYawResetAngle(yaw_angle_change_rad);
-    if (ahrs_check.last_yaw_reset_ms != yaw_reset_ms) {
+    const uint16_t new_yaw_reset_count = ahrs.get_yaw_reset_count();
+    if (ahrs_check.ahrs_yaw_reset_count != new_yaw_reset_count) {
         should_reset = true;
-        ahrs_check.last_yaw_reset_ms = yaw_reset_ms;
-        LOGGER_WRITE_EVENT(LogEvent::EKF_YAW_RESET);
+        ahrs_check.ahrs_yaw_reset_count = new_yaw_reset_count;
     }
 
     // check for change in primary EKF, or EKF lane.

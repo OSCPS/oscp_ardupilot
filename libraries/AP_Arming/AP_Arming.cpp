@@ -229,7 +229,8 @@ AP_Arming::AP_Arming()
 
 __INITFUNC__ void AP_Arming::init(void)
 {
-    // PARAM_CONVERSION - 4.7 CHECK -> SKIPCHK
+    // PARAMETER_CONVERSION - Added: Dec-2025 for ArduPilot-4.7
+    // ARMING_CHECK -> ARMING_SKIPCHK
 
     if (!checks_to_skip.configured()) {
         // new parameter is not configured (though it may be set non-zero in a
@@ -416,13 +417,8 @@ bool AP_Arming::barometer_checks(bool report)
 bool AP_Arming::airspeed_checks(bool report)
 {
     if (check_enabled(Check::AIRSPEED)) {
-        const AP_Airspeed *airspeed = AP_Airspeed::get_singleton();
-        if (airspeed == nullptr) {
-            // not an airspeed capable vehicle
-            return true;
-        }
         char buffer[MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN+1] {};
-        if (!airspeed->arming_checks(sizeof(buffer), buffer)) {
+        if (!AP::airspeed().arming_checks(sizeof(buffer), buffer)) {
             check_failed(Check::AIRSPEED, report, "Airspeed: %s", buffer);
             return false;
         }
@@ -810,7 +806,7 @@ bool AP_Arming::hardware_safety_check(bool report)
 
       // check if safety switch has been pushed
       if (hal.util->safety_switch_state() == AP_HAL::Util::SAFETY_DISARMED) {
-          check_failed(Check::SWITCH, report, "Hardware safety switch");
+          check_failed(Check::SWITCH, report, "Safety Switch");
           return false;
       }
     }
@@ -833,16 +829,8 @@ bool AP_Arming::rc_arm_checks(AP_Arming::Method method)
         return true;
     }
 
-    bool check_passed = true;
-    // ensure all rc channels have different functions
-    if (rc().duplicate_options_exist()) {
-        check_failed(Check::PARAMETERS, true, "Duplicate Aux Switch Options");
-        check_passed = false;
-    }
-    if (rc().flight_mode_channel_conflicts_with_rc_option()) {
-        check_failed(Check::PARAMETERS, true, "Mode channel and RC%d_OPTION conflict", rc().flight_mode_channel_number());
-        check_passed = false;
-    }
+    // not skippable via the PARAMETERS check bit
+    bool check_passed = rc_option_checks(true);
     {
         if (!rc().option_is_enabled(RC_Channels::Option::ARMING_SKIP_CHECK_RPY)) {
             const struct {
@@ -881,6 +869,25 @@ bool AP_Arming::rc_arm_checks(AP_Arming::Method method)
                 }
             }
         }
+    }
+    return check_passed;
+}
+
+// check RCn_OPTION configuration, independent of RC input
+bool AP_Arming::rc_option_checks(bool report)
+{
+    if (!check_enabled(Check::RC)) {
+        return true;
+    }
+    bool check_passed = true;
+    // ensure all rc channels have different functions
+    if (rc().duplicate_options_exist()) {
+        check_failed(Check::PARAMETERS, report, "Duplicate Aux Switch Options");
+        check_passed = false;
+    }
+    if (rc().flight_mode_channel_conflicts_with_rc_option()) {
+        check_failed(Check::PARAMETERS, report, "Mode channel and RC%d_OPTION conflict", rc().flight_mode_channel_number());
+        check_passed = false;
     }
     return check_passed;
 }
@@ -941,13 +948,8 @@ bool AP_Arming::manual_transmitter_checks(bool report)
 #if AP_MISSION_ENABLED
 bool AP_Arming::mission_checks(bool report)
 {
-    AP_Mission *mission = AP::mission();
+    AP_Mission &mission = AP::mission();
     if (check_enabled(Check::MISSION) && _required_mission_items) {
-        if (mission == nullptr) {
-            check_failed(Check::MISSION, report, "No mission library present");
-            return false;
-        }
-
         const struct MisItemTable {
           MIS_ITEM_CHECK check;
           MAV_CMD mis_item_type;
@@ -962,7 +964,7 @@ bool AP_Arming::mission_checks(bool report)
         };
         for (uint8_t i = 0; i < ARRAY_SIZE(misChecks); i++) {
             if (_required_mission_items & misChecks[i].check) {
-                if (!mission->contains_item(misChecks[i].mis_item_type)) {
+                if (!mission.contains_item(misChecks[i].mis_item_type)) {
                     check_failed(Check::MISSION, report, "Missing mission item: %s", misChecks[i].type);
                     return false;
                 }
@@ -992,10 +994,28 @@ bool AP_Arming::mission_checks(bool report)
         }
     }
 
+    // Check there are no zero altitude takeoffs
+    // Although technically valid in some very rare cases it's most likely that the user simply forgot to enter an altitude.
+    if (check_enabled(Check::MISSION)) {
+        const uint16_t num_commands = mission.num_commands();
+        for (uint16_t i = 1; i < num_commands; i++) {
+            if (!mission.is_takeoff_type_cmd(mission.get_command_id(i))) {
+                continue;
+            }
+            AP_Mission::Mission_Command cmd;
+            if (!mission.read_cmd_from_storage(i, cmd)) {
+                continue;
+            }
+            if (cmd.content.location.alt == 0) {
+                check_failed(Check::MISSION, report, "Mission: Zero takeoff altitude");
+                return false;
+            }
+        }
+    }
+
 #if AP_SDCARD_STORAGE_ENABLED
     if (check_enabled(Check::MISSION) &&
-        mission != nullptr &&
-        (mission->failed_sdcard_storage() || StorageManager::storage_failed())) {
+        (mission.failed_sdcard_storage() || StorageManager::storage_failed())) {
         check_failed(Check::MISSION, report, "Failed to open %s", AP_MISSION_SDCARD_FILENAME);
         return false;
     }
@@ -1005,7 +1025,7 @@ bool AP_Arming::mission_checks(bool report)
     // do not allow arming if there are no mission items and we are in
     // (e.g.) AUTO mode
     if (AP::vehicle()->current_mode_requires_mission() &&
-        (mission == nullptr || !mission->present())) {
+        !mission.present()) {
         check_failed(Check::MISSION, report, "Mode requires mission");
         return false;
     }
@@ -1238,8 +1258,7 @@ bool AP_Arming::system_checks(bool report)
 bool AP_Arming::terrain_database_required() const
 {
 #if AP_MISSION_ENABLED
-    AP_Mission *mission = AP::mission();
-    if (mission != nullptr && mission->contains_terrain_alt_items()) {
+    if (AP::mission().contains_terrain_alt_items()) {
         return true;
     }
 #endif
@@ -1662,6 +1681,18 @@ bool AP_Arming::serial_protocol_checks(bool display_failure)
     return true;
 }
 
+#if AP_POWEROFF_ENABLED && AP_VEHICLE_ENABLED
+// Check for a pending power off
+bool AP_Arming::poweroff_checks(bool display_failure) const
+{
+    if (AP::vehicle()->poweroff_pending()) {
+        check_failed(display_failure, "Power off pending");
+        return false;
+    }
+    return true;
+}
+#endif  // AP_POWEROFF_ENABLED && AP_VEHICLE_ENABLED
+
 //Check for estop
 bool AP_Arming::estop_checks(bool display_failure)
 {
@@ -1718,6 +1749,7 @@ bool AP_Arming::pre_arm_checks(bool report)
 #endif
 #if AP_RC_CHANNEL_ENABLED
         &  manual_transmitter_checks(report)
+        &  rc_option_checks(report)
 #endif
 #if AP_MISSION_ENABLED
         &  mission_checks(report)
@@ -1768,6 +1800,9 @@ bool AP_Arming::pre_arm_checks(bool report)
 #if AP_ARMING_CRASHDUMP_ACK_ENABLED
         & crashdump_checks(report)
 #endif
+#if AP_POWEROFF_ENABLED && AP_VEHICLE_ENABLED
+        &  poweroff_checks(report)
+#endif // AP_POWEROFF_ENABLED && AP_VEHICLE_ENABLED
         &  serial_protocol_checks(report)
         &  estop_checks(report);
 
@@ -1871,6 +1906,9 @@ bool AP_Arming::mandatory_checks(bool report)
 #endif
     ret &= rc_in_calibration_check(report);
     ret &= serial_protocol_checks(report);
+#if AP_POWEROFF_ENABLED && AP_VEHICLE_ENABLED
+    ret &= poweroff_checks(report);
+#endif // AP_POWEROFF_ENABLED && AP_VEHICLE_ENABLED
     return ret;
 }
 
@@ -1983,6 +2021,14 @@ bool AP_Arming::disarm(const AP_Arming::Method method, bool do_disarm_checks)
         hal.rcout->force_safety_on();
     }
 #endif // HAL_HAVE_SAFETY_SWITCH
+
+#if AP_COMPASS_LEARN_COPY_FROM_EKF_ENABLED
+    // save any compass offsets the EKF has learned.  This must be done
+    // before the vehicle calls hal.util->set_soft_armed(false); once the
+    // EKF sees onGround it clears finalInflightMagInit and will no
+    // longer hand out learned offsets.
+    AP::compass().save_ekf_learned_offsets();
+#endif  // AP_COMPASS_LEARN_COPY_FROM_EKF_ENABLED
 
 #if HAL_GYROFFT_ENABLED
     AP_GyroFFT *fft = AP::fft();

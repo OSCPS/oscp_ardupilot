@@ -21,10 +21,12 @@
 
 #include <hal.h>
 #include "HAL_ChibiOS_Class.h"
+#include "USB_Debug.h"
 #include <AP_HAL_Empty/AP_HAL_Empty_Private.h>
 #include <AP_HAL_ChibiOS/AP_HAL_ChibiOS_Private.h>
 #include "shared_dma.h"
 #include "sdcard.h"
+#include "USB_MSD.h"
 #include <sysperf.h>
 #include "hwdef/common/usbcfg.h"
 #include "hwdef/common/stm32_util.h"
@@ -36,6 +38,7 @@
 #endif
 #include <AP_Vehicle/AP_Vehicle_Type.h>
 #include <AP_HAL/SIMState.h>
+#include "MemProtect.h"
 
 #include <hwdef.h>
 
@@ -280,6 +283,9 @@ static void main_loop()
 
     schedulerInstance.hal_initialized();
 
+#if AP_USB_DEBUG_ENABLED && AP_USB_DEBUG_STARTUP_WAIT_ENABLED
+    ChibiOS::usb_debug_startup_wait();
+#endif
     g_callbacks->setup();
 
 #if HAL_ENABLE_SAVE_PERSISTENT_PARAMS
@@ -328,7 +334,15 @@ static void main_loop()
     mem_protect_enable();
 #endif  // AP_BOARDCONFIG_MCU_MEMPROTECT_ENABLED
 
+#if AP_BOARDCONFIG_MCU_MEMPROTECT_TRACE_ENABLED
+    // the storage thread is already running, so the region always has a re-armer
+    memprotect_init();
+#endif  // AP_BOARDCONFIG_MCU_MEMPROTECT_TRACE_ENABLED
+
     while (true) {
+#if AP_USB_DEBUG_ENABLED
+        ChibiOS::usb_debug_poll();
+#endif
         g_callbacks->loop();
 
 #if HAL_SCHEDULER_LOOP_DELAY_ENABLED && !APM_BUILD_TYPE(APM_BUILD_Replay)
@@ -366,6 +380,12 @@ void HAL_ChibiOS::run(int argc, char * const argv[], Callbacks* callbacks) const
 #if AP_SIM_ENABLED
     AP::sitl()->init();
 #endif  // AP_SIM_ENABLED
+
+#if AP_REBOOT_MASS_STORAGE_ENABLED && HAL_USB_MSD_BOOT_ENABLED
+    if (ChibiOS::usb_msd_boot_requested()) {
+        ChibiOS::usb_msd_run();
+    }
+#endif
 
 #if HAL_USE_SERIAL_USB == TRUE
     usb_initialise();

@@ -94,8 +94,6 @@ void Copter::read_radio()
     const uint32_t tnow_ms = millis();
 
     if (rc().read_input()) {
-        ap.new_radio_frame = true;
-
         set_throttle_and_failsafe(channel_throttle->get_radio_in());
         set_throttle_zero_flag(channel_throttle->get_control_in());
 
@@ -134,7 +132,7 @@ void Copter::read_radio()
     set_failsafe_radio(true);
 }
 
-#define FS_COUNTER 3        // radio failsafe kicks in after 3 consecutive throttle values below failsafe_throttle_value
+#define FS_COUNTER 3        // radio failsafe kicks in after 3 consecutive throttle values at or below failsafe_throttle_value
 void Copter::set_throttle_and_failsafe(uint16_t throttle_pwm)
 {
     // if failsafe not enabled pass through throttle and exit
@@ -144,7 +142,7 @@ void Copter::set_throttle_and_failsafe(uint16_t throttle_pwm)
     }
 
     //check for low throttle value
-    if (throttle_pwm < (uint16_t)g.failsafe_throttle_value) {
+    if (throttle_pwm <= g.failsafe_throttle_value) {
 
         // if we are already in failsafe or motors not armed pass through throttle and exit
         if (failsafe.radio || !(rc().has_ever_seen_rc_input() || motors->armed())) {
@@ -188,7 +186,7 @@ void Copter::set_throttle_zero_flag(int16_t throttle_control)
     // and we are flying. Immediately set as non-zero
     if ((!ap.using_interlock && (throttle_control > 0) && !SRV_Channels::get_emergency_stop()) ||
         (ap.using_interlock && motors->get_interlock()) ||
-        ap.armed_with_airmode_switch || air_mode == AirMode::AIRMODE_ENABLED) {
+        air_mode_active()) {
         last_nonzero_throttle_ms = tnow_ms;
         ap.throttle_zero = false;
     } else if (tnow_ms - last_nonzero_throttle_ms > THROTTLE_ZERO_DEBOUNCE_TIME_MS) {

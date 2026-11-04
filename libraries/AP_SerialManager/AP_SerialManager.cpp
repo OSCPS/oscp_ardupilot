@@ -319,15 +319,14 @@ const AP_Param::GroupInfo AP_SerialManager::var_info[] = {
     // @Param: _PASS1
     // @DisplayName: Serial passthru first port
     // @Description: This sets one side of pass-through between two serial ports. Once both sides are set then all data received on either port will be passed to the other port
-    // @Values: -1:Disabled,0:Serial0,1:Serial1,2:Serial2,3:Serial3,4:Serial4,5:Serial5,6:Serial6
+    // @Values: -1:Disabled,0:Serial0,1:Serial1,2:Serial2,3:Serial3,4:Serial4,5:Serial5,6:Serial6,7:Serial7,8:Serial8,9:Serial9,21:Network Port1,22:Network Port2,23:Network Port3,24:Network Port4,41:CAN1 Serial1,42:CAN1 Serial2,43:CAN1 Serial3,51:CAN2 Serial1,52:CAN2 Serial2,53:CAN2 Serial3,61:Scripting Serial1,62:Scripting Serial2,63:Scripting Serial3
     // @User: Advanced
     AP_GROUPINFO("_PASS1",  20, AP_SerialManager, passthru_port1, 0),
 
     // @Param: _PASS2
+    // @CopyFieldsFrom: SERIAL_PASS1
     // @DisplayName: Serial passthru second port
     // @Description: This sets one side of pass-through between two serial ports. Once both sides are set then all data received on either port will be passed to the other port. This parameter is normally reset to -1 on reboot, disabling passthrough. If SERIAL_PASSTIMO is set to -1 then it is not reset on reboot.
-    // @Values: -1:Disabled,0:Serial0,1:Serial1,2:Serial2,3:Serial3,4:Serial4,5:Serial5,6:Serial6
-    // @User: Advanced
     AP_GROUPINFO("_PASS2",  21, AP_SerialManager, passthru_port2, -1),
 
     // @Param: _PASSTIMO
@@ -592,6 +591,7 @@ void AP_SerialManager::init()
 
 void AP_SerialManager::convert_parameters()
 {
+    // PARAMETER_CONVERSION - Added: Jun-2025 for ArduPilot-4.7
     for (auto &_state : state) {
         _state.options.convert_parameter_width(AP_PARAM_INT16);
     }
@@ -678,11 +678,11 @@ uint32_t AP_SerialManager::find_baudrate(enum SerialProtocol protocol, uint8_t i
 
 void AP_SerialManager::set_and_default_baud(enum SerialProtocol protocol, uint8_t instance, uint32_t _baud)
 {
-    const struct UARTState *_state = find_protocol_instance(protocol, instance);
+    struct UARTState *_state = const_cast<struct UARTState *>(find_protocol_instance(protocol, instance));
     if (_state == nullptr) {
         return;
     }
-    state->baud.set_and_default(_baud);
+    _state->baud.set_and_default(_baud);
 }
 
 // find_portnum - find port number (SERIALn index) for a protocol and instance, -1 for not found
@@ -842,7 +842,7 @@ void AP_SerialManager::set_protocol_and_baud(uint8_t sernum, enum SerialProtocol
 }
 bool AP_SerialManager::pre_arm_checks(char *failure_msg, const uint8_t failure_msg_len)
 {
-    // PARAMETER_CONVERSION - Added May 2028 for ArduPilot-4.7
+    // PARAMETER_CONVERSION - Added: Jun-2025 for ArduPilot-4.7
     // ArduPilot 4.7 pre-arm fails if either bit is set when conversion should have nuked them
     // ArduPilot 4.8 pre-arm fails if either bit is set when conversion should have nuked them
     // ArduPilot 4.9 pre-arm fails if either bit is set when conversion should have nuked them
@@ -907,6 +907,60 @@ void AP_SerialManager::registered_ports_log()
 #endif
 
 #endif // AP_SERIALMANAGER_REGISTER_ENABLED
+
+// Return a device id for this port
+uint32_t AP_SerialManager::UARTState::get_device_id() const
+{
+#if AP_SERIALMANAGER_REGISTER_ENABLED
+    if (idx >= AP_SERIALMANAGER_SCR_PORT_1) {
+        // Scripting port
+        return AP_HAL::Device::make_bus_id(
+            AP_HAL::Device::BUS_TYPE_SERIAL,
+            0,
+            idx - AP_SERIALMANAGER_SCR_PORT_1,
+            uint8_t(DeviceType::SCRIPTING)
+        );
+    }
+
+    if (idx >= AP_SERIALMANAGER_CAN_D2_PORT_1) {
+        // CAN D2 port
+        return AP_HAL::Device::make_bus_id(
+            AP_HAL::Device::BUS_TYPE_SERIAL,
+            1,
+            idx - AP_SERIALMANAGER_CAN_D2_PORT_1,
+            uint8_t(DeviceType::CANBUS)
+        );
+    }
+
+    if (idx >= AP_SERIALMANAGER_CAN_D1_PORT_1) {
+        // CAN D1 port
+        return AP_HAL::Device::make_bus_id(
+            AP_HAL::Device::BUS_TYPE_SERIAL,
+            0,
+            idx - AP_SERIALMANAGER_CAN_D1_PORT_1,
+            uint8_t(DeviceType::CANBUS)
+        );
+    }
+
+    if (idx >= AP_SERIALMANAGER_NET_PORT_1) {
+        // Networking port
+        return AP_HAL::Device::make_bus_id(
+            AP_HAL::Device::BUS_TYPE_SERIAL,
+            0,
+            idx - AP_SERIALMANAGER_NET_PORT_1,
+            uint8_t(DeviceType::NETWORKING)
+        );
+    }
+#endif // AP_SERIALMANAGER_REGISTER_ENABLED
+
+    // Standard port
+    return AP_HAL::Device::make_bus_id(
+        AP_HAL::Device::BUS_TYPE_SERIAL,
+        0,
+        idx,
+        uint8_t(DeviceType::UART)
+    );
+}
 
 namespace AP {
 

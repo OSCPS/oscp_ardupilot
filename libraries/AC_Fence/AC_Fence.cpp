@@ -200,6 +200,8 @@ AC_Fence::AC_Fence()
 // get a user-friendly list of fences
 void AC_Fence::get_fence_names(uint8_t fences, ExpandingString& msg)
 {
+    // only bits with an entry in FENCE_NAMES may be named
+    fences &= AC_FENCE_ALL_FENCES;
     if (!fences) {
         return;
     }
@@ -209,9 +211,10 @@ void AC_Fence::get_fence_names(uint8_t fences, ExpandingString& msg)
         "Polygon",
         "Min Alt",
     };
+    static_assert(AC_FENCE_ALL_FENCES < (1U << ARRAY_SIZE(FENCE_NAMES)), "FENCE_NAMES must name every fence type");
     uint8_t i = 0;
     uint8_t nfences = 0;
-    while (fences !=0) {
+    while (fences != 0 && i < ARRAY_SIZE(FENCE_NAMES)) {
         if (fences & 0x1) {
             if (nfences > 0) {
                 if (!(fences & ~1U)) {
@@ -560,12 +563,28 @@ bool AC_Fence::pre_arm_check(char *failure_msg, const uint8_t failure_msg_len) c
         return false;
     }
 
-    if (_alt_max_m < _alt_min_m) {
+    // change min-alt into the same frame as max-alt to make them comparable:
+    const Location::AltFrame alt_max_frame = get_alt_max_frame();
+    float framed_alt_min_m = _alt_min_m;
+    if (get_alt_min_frame() != alt_max_frame) {
+        Location loc;
+        if (!AP::ahrs().get_location(loc)) {
+            hal.util->snprintf(failure_msg, failure_msg_len, "Fence requires position");
+            return false;
+        }
+        loc.set_alt_m(_alt_min_m, get_alt_min_frame());
+        if (!loc.get_alt_m(alt_max_frame, framed_alt_min_m)) {
+            hal.util->snprintf(failure_msg, failure_msg_len, "Fence requires terrain");
+            return false;
+        }
+    }
+
+    if (_alt_max_m < framed_alt_min_m) {
         hal.util->snprintf(failure_msg, failure_msg_len, "FENCE_ALT_MAX < FENCE_ALT_MIN");
         return false;
     }
 
-    if (_alt_max_m - _alt_min_m <= 2.0f * _margin_m) {
+    if (_alt_max_m - framed_alt_min_m <= 2.0f * _margin_m) {
         hal.util->snprintf(failure_msg, failure_msg_len, "FENCE_MARGIN too big");
         return false;
     }
@@ -1089,7 +1108,7 @@ void AC_Fence::clear_margin_breach(uint8_t fence_type)
 {
     if (_breached_fence_margins & fence_type) {
         if (option_enabled(OPTIONS::NOTIFY_MARGIN_BREACH)) {
-            print_fence_message("cleared margin breach", fence_type);
+            print_fence_message("cleared margin breach", _breached_fence_margins & fence_type);
         }
     }
 

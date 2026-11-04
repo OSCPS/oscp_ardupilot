@@ -50,13 +50,32 @@ class Compass():
 
 
 class HWDef:
-    def __init__(self, quiet=False, outdir=None, hwdef: list | None = None):
+
+    # a line which contains none of shlex's special characters, and whose
+    # whitespace is only spaces and tabs, is split identically by
+    # str.split() and by shlex.split() in either posix mode:
+    NEEDS_SHLEX_RE = re.compile(r"""[\\'"]|[^\S \t]""")
+
+    @staticmethod
+    def split_line(line, posix=True):
+        '''shlex.split(), but taking a much cheaper path for the simple lines
+        which make up almost all of a hwdef.  shlex is a
+        character-at-a-time lexer written in Python, and parsing every
+        line of every hwdef with it is slow.'''
+        if HWDef.NEEDS_SHLEX_RE.search(line) is None:
+            return line.split()
+        return shlex.split(line, posix=posix)
+
+    def __init__(self, quiet=False, outdir=None, hwdef: list | None = None,
+                 build_option_defines: dict | None = None):
         if hwdef is None:
             hwdef = []
 
         self.outdir = outdir
         self.hwdef = hwdef
         self.quiet = quiet
+        # {define: 0 or 1} for the build options given to waf configure
+        self.build_option_defines = build_option_defines or {}
 
         # dictionary of all config lines, indexed by first word
         self.config = {}
@@ -116,7 +135,7 @@ class HWDef:
         ret = []
         for line in lines:
             if line.startswith("include"):
-                a = shlex.split(line)
+                a = self.split_line(line)
                 if len(a) > 1 and a[0] == "include":
                     fname2 = os.path.relpath(os.path.join(os.path.dirname(fname), a[1]))
                     ret.extend(self.load_file_with_include(fname2))
@@ -171,6 +190,19 @@ class HWDef:
     def write_define(self, f, name, value):
         f.write(f"#define {name} {value}\n")
 
+    def apply_build_option_defines(self):
+        '''use the build option values for the script's own decisions too,
+        like whether to embed the bootloader, not only in hwdef.h'''
+        self.intdefines.update(self.build_option_defines)
+
+    def define_line(self, line):
+        '''the #define for a "define NAME value" line. A build option given
+        for NAME replaces the value, so that it matches the option's -D'''
+        name = line.split()[1]
+        if name in self.build_option_defines:
+            return f"#define {name} {self.build_option_defines[name]}\n"
+        return f"#define {line[7:]}\n"
+
     def write_hwdef_header(self, outfilename):
         '''write hwdef header file'''
         self.progress("Writing hwdef setup in %s" % outfilename)
@@ -216,16 +248,19 @@ class HWDef:
             line = line.strip()
             if len(line) == 0 or line[0] == '#':
                 continue
-            a = shlex.split(line)
-            if a[0] == "include" and len(a) > 1:
-                include_file = a[1]
-                if include_file[0] != '/':
-                    dir = os.path.dirname(filename)
-                    include_file = os.path.normpath(
-                        os.path.join(dir, include_file))
-                self.process_file(include_file, depth+1)
-            else:
-                self.process_line(line, depth)
+            # only the include lines need splitting here; every other
+            # line is split once, by process_line:
+            if "include" in line:
+                a = self.split_line(line)
+                if a[0] == "include" and len(a) > 1:
+                    include_file = a[1]
+                    if include_file[0] != '/':
+                        dir = os.path.dirname(filename)
+                        include_file = os.path.normpath(
+                            os.path.join(dir, include_file))
+                    self.process_file(include_file, depth+1)
+                    continue
+            self.process_line(line, depth)
 
     def process_hwdefs(self):
         for fname in self.hwdef:
@@ -235,6 +270,7 @@ class HWDef:
     def run(self):
         # process input file
         self.process_hwdefs()
+        self.apply_build_option_defines()
 
         # write out hwdef.h
         self.write_hwdef_header(self.get_output_path("hwdef.h"))
@@ -245,9 +281,11 @@ class HWDef:
         # flow should call self.write_ROMFS() directly there.
         self.write_ROMFS()
 
-    def process_line(self, line, depth):
-        '''process one line of pin definition file'''
-        a = shlex.split(line, posix=False)
+    def process_line(self, line, depth, a=None):
+        '''process one line of pin definition file.  a is the line already
+        split into words, if the caller has done that itself'''
+        if a is None:
+            a = self.split_line(line, posix=False)
 
         if a[0] == 'undef':
             return self.process_line_undef(line, depth, a)
@@ -357,6 +395,7 @@ class HWDef:
     def get_stale_defines(self):
         '''returns a map with a stale define and a comment as to what to do about it'''
         return {
+            'ALLOW_ARM_NO_COMPASS': 'ALLOW_ARM_NO_COMPASS is no longer used; remove it from your hwdef (use ARMING_SKIPCHK to skip compass checks)',  # noqa:E501
             'HAL_COMPASS_DEFAULT': 'HAL_COMPASS_DEFAULT is no longer used; remove it from your hwdef',
             'HAL_NO_GCS': 'HAL_NO_GCS is no longer used; try "define HAL_GCS_ENABLED 0"',
             'HAL_NO_LOGGING': 'HAL_NO_LOGGING is no longer used; try "define HAL_LOGGING_ENABLED 0"',

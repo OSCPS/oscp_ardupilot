@@ -121,4 +121,11 @@ protected:
     AP_Float angle_p;
 
     const AP_AutoTune::ATType autotune_type;
+
+private:
+
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+    // Ticks tracking to check that the controller is called once per loop and no more
+    uint32_t last_run_ticks;
+#endif
 };

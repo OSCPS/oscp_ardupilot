@@ -226,8 +226,10 @@ void ModeAuto::auto_circle_start()
 {
     sub.auto_mode = Auto_Circle;
 
-    // initialise circle controller
-    sub.circle_nav.init_NEU_cm(sub.circle_nav.get_center_NEU_cm(), sub.circle_nav.center_is_terrain_alt(), sub.circle_nav.get_rate_degs());
+    // initialise circle controller.  the rate target is used rather
+    // than the rate parameter as auto_circle_movetoedge_start has
+    // signed it to give the direction the mission item asked for
+    sub.circle_nav.init_NEU_cm(sub.circle_nav.get_center_NEU_cm(), sub.circle_nav.center_is_terrain_alt(), sub.circle_nav.get_rate_target_degs());
 }
 
 // auto_circle_run - circle in AUTO flight mode
@@ -439,9 +441,10 @@ bool ModeAuto::auto_terrain_recover_start()
         sub.auto_mode = Auto_TerrainRecover;
         break;
 
-        // Not connected or no data
-    default:
-        return false; // Rangefinder is not connected, or has stopped responding
+    case RangeFinder::Status::NotConnected:
+    case RangeFinder::Status::NoData:
+    case RangeFinder::Status::PoweredDown:
+        return false;
     }
 
     // Initialize recovery timeout time
@@ -526,8 +529,9 @@ void ModeAuto::auto_terrain_recover_run()
         }
         break;
 
-        // Not connected, or no data
-    default:
+    case RangeFinder::Status::NotConnected:
+    case RangeFinder::Status::NoData:
+    case RangeFinder::Status::PoweredDown:
         // Terrain failsafe recovery has failed, terrain data is not available
         // and rangefinder is not connected, or has stopped responding
         gcs().send_text(MAV_SEVERITY_CRITICAL, "Terrain failsafe recovery failure: No Rangefinder!");

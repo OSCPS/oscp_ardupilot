@@ -40,14 +40,7 @@ extern const AP_HAL::HAL& hal;
 #define GPS_UAVCAN_DEBUGGING 0
 
 #if GPS_UAVCAN_DEBUGGING
-#if defined(HAL_BUILD_AP_PERIPH)
- extern "C" {
-   void can_printf(const char *fmt, ...);
- }
- # define Debug(fmt, args ...)  do {can_printf("%s:%d: " fmt "\n", __FUNCTION__, __LINE__, ## args);} while(0)
-#else
  # define Debug(fmt, args ...)  do {hal.console->printf("%s:%d: " fmt "\n", __FUNCTION__, __LINE__, ## args); hal.scheduler->delay(1); } while(0)
-#endif
 #else
  # define Debug(fmt, args ...)
 #endif
@@ -503,6 +496,15 @@ void AP_GPS_DroneCAN::handle_heading_msg(const ardupilot_gnss_Heading& msg)
     if (interim_state.have_gps_yaw) {
         interim_state.gps_yaw_time_ms = AP_HAL::millis();
     }
+    // the Heading message cannot carry the antenna offset the yaw was
+    // calculated from (and for AP-origin senders such as an AP_Periph
+    // Heading fallback it may be level-assumed moving baseline yaw), so no
+    // attitude correction is possible here. Zero the offset so a stale value
+    // from an earlier relposheading calculation on this instance is never
+    // applied to it
+#if AP_GPS_MB_YAW_OFFSET_ENABLED
+    interim_state.mb_yaw_offset.zero();
+#endif
 
     interim_state.have_gps_yaw_accuracy = msg.heading_accuracy_valid;
     interim_state.gps_yaw_accuracy = degrees(msg.heading_accuracy_rad);

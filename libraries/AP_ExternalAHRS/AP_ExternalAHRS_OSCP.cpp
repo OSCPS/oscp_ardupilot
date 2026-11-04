@@ -11,12 +11,11 @@
 
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
-
-/* Thank you for flying with OSCP. For integration steps, see https://docs.oscp.com/Integration/ArduPilot/ */
+ 
+    For integration steps, see https://docs.oscp.com/Integration/ArduPilot/
+   */
 
 /* Includes */
-#define AP_MATH_ALLOW_DOUBLE_FUNCTIONS 1
 #include "AP_ExternalAHRS_config.h"
 #if AP_EXTERNAL_AHRS_OSCP_ENABLED
 
@@ -25,14 +24,10 @@
 #include <AP_SerialManager/AP_SerialManager.h>
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Math/AP_Math.h>
-#include <AP_Math/crc.h>
-#include <AP_Baro/AP_Baro.h>
 #include <AP_InertialSensor/AP_InertialSensor.h>
 #include <AP_Compass/AP_Compass.h>
 #include <GCS_MAVLink/GCS.h>
-#include <AP_Logger/AP_Logger.h>
 #include <cstring>
-#include <cstdio>
 
 extern const AP_HAL::HAL& hal;
 
@@ -147,9 +142,10 @@ void AP_ExternalAHRS_OSCP::update_thread(void) {
     while (true) {
         drain_uart_data(parser);
 
-        /* For OSCP IMU recovery after power cycling */
+        /* For OSCP IMU recovery */
         const uint32_t now = AP_HAL::millis();
-        if ((last_frame_ms != 0) && ((now - last_frame_ms) < 50) && last_op_mode != oscp_operating_mode_t::OSCP_OP_MODE_MEDIUM) {
+        if ((last_frame_ms != 0) && ((now - last_frame_ms) < 50) && last_op_mode != oscp_operating_mode_t::OSCP_OP_MODE_MEDIUM && (now - last_recovery_ms > 3000)) {
+            last_recovery_ms = now;
             setup_complete = false;
             GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "OSCP: Recovering IMU to Medium mode! (OMM: 500Hz)");
             oscp_configure_imu(parser);
@@ -258,7 +254,7 @@ void AP_ExternalAHRS_OSCP::oscp_configure_imu(oscp_parser_t &parser) {
  
         oscp_send_cobs_command("EXIT\r\n");
  
-        /* Wait 250ms to try again, if fails after 3x, something is wrong keep setup_complete = false */
+        /* Wait to try again, if fails after 3x, something is wrong keep setup_complete = false */
         const uint32_t time = AP_HAL::millis();
         while ((AP_HAL::millis() - time) < 250) {
             drain_uart_data(parser);
@@ -272,7 +268,7 @@ void AP_ExternalAHRS_OSCP::oscp_configure_imu(oscp_parser_t &parser) {
         }
     }
 
-    /* ArduPilot's SCHED_LOOP_RATE = 400Hz (Default); will trigger a PreArm error unless configured. Changing value must be done by ADVANCED USERS ONLY setup_complete = false; drone will stay grounded. */
+    /* ArduPilot's SCHED_LOOP_RATE = 400Hz (Default); will trigger a PreArm error unless configured. Changing value must be done by ADVANCED USERS ONLY. setup_complete = false; drone will stay grounded. */
     setup_complete = false;
     GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "OSCP: failed to enter Medium mode (OML: 100Hz)");
 }
@@ -325,8 +321,9 @@ void AP_ExternalAHRS_OSCP::oscp_parser_buffer(oscp_parser_t* _parser) {
         return;
     }
 
-    const uint8_t frame_type = decode[0] & 0x07u;
-    if (frame_type > 7 || dec_len != OSCP_FRAME_LEN[frame_type]) {
+    //const uint8_t frame_type = decode[0] & 0x07u;
+    const oscp_frame_type_t frame_type = get_frame_type(decode[0]);
+    if (frame_type > 7 || dec_len != OSCP_FRAME_LEN[uint8_t frame_type]) {
          _parser->stats.framing_errors++;
         return;
     }
@@ -407,22 +404,26 @@ void AP_ExternalAHRS_OSCP::oscp_decode_raw(oscp_frame_t *frame, const uint8_t *d
 
     {
         WITH_SEMAPHORE(state.sem);
-        // OSCP is Z-up; rotate Roll180 into ArduPilot FRD (X fwd, Y right, Z down)
-        state.accel = Vector3f{raw->accel_x, -raw->accel_y, -raw->accel_z} * GRAVITY_MSS;
-        state.gyro  = Vector3f{raw->gyro_x,  -raw->gyro_y,  -raw->gyro_z}  * DEG_TO_RAD;
+        state.accel = Vector3f{raw->accel_x, raw->accel_y, raw->accel_z} * GRAVITY_MSS;
+        state.gyro  = Vector3f{raw->gyro_x,  raw->gyro_y,  raw->gyro_z}  * DEG_TO_RAD;
+
+        imu.accel = state.accel;
+        imu.gyro = state.gyro;
     }
 
     {
         AP_ExternalAHRS::ins_data_message_t imu;
-        imu.accel = state.accel;
-        imu.gyro = state.gyro;
         imu.temperature = raw->temp;
         AP::ins().handle_external(imu);
+    }
 
+    #if #if AP_COMPASS_EXTERNALAHRS_ENABLED
+    {
         AP_ExternalAHRS::mag_data_message_t mag;
-        mag.field = Vector3f(raw->mag_x, -raw->mag_y, -raw->mag_z) * UTESLA_TO_MGAUSS;
+        mag.field = Vector3f(raw->mag_x, raw->mag_y, raw->mag_z) * UTESLA_TO_MGAUSS;
         AP::compass().handle_external(mag);
     }
+    #endif
 }
 
 void AP_ExternalAHRS_OSCP::oscp_decode_startup(oscp_frame_t *frame, const uint8_t *data) {

@@ -11,9 +11,9 @@
 
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
-
- /* Thank you for flying with OSCP. For integration steps, see https://docs.oscp.com/Integration/ArduPilot/ */
+ 
+    For integration steps, see https://docs.oscp.com/Integration/ArduPilot/
+   */
 
 #pragma once
 
@@ -41,7 +41,7 @@ public:
     const char* get_name(void) const override;
     int8_t get_port(void) const override;
     
-    /* Returning 0 for the IMU devices - will be overriden with INS devices */
+    /* Returning 0 for the IMU devices - will be overridden with INS devices */
     uint8_t num_gps_sensors(void) const override { return 0; }
 
 private:
@@ -79,7 +79,7 @@ private:
 
     /* Raw Operating Frame - 61 bytes decoded */
     struct PACKED oscp_raw_t {
-        uint8_t header_byte;    // Misalignment Correction (2B) - Operating Mode (2B) - Frame Type (3B) 
+        uint8_t header_byte;    // Misalignment Correction (2B) - Operating Mode (3b) - Frame Type (3b) 
         uint8_t counter;        // Wrapping frame counter [0,255] 
         uint64_t timestamp_ms;  // Timestamp in ms since last power up or reset 
         float gyro_x;           // unit: dps 
@@ -100,7 +100,7 @@ private:
 
     /* Euler Angles Frame - 25 bytes decoded */
     struct PACKED oscp_euler_t {
-        uint8_t header_byte;    // Misalignment Correction (2B) - Operating Mode (2B) - Frame Type (3B) 
+        uint8_t header_byte;    // Misalignment Correction (2B) - Operating Mode (3b) - Frame Type (3b) 
         uint8_t counter;        // Wrapping frame counter [0,255] 
         uint64_t timestamp_ms;  // Timestamp in ms since last power up or reset 
         float roll;             // deg 
@@ -112,7 +112,7 @@ private:
     
     /* Quaternion Frame - 29 bytes decoded */
     struct PACKED oscp_quat_t {
-        uint8_t header_byte;    // Misalignment Correction (2b) - Operating Mode (2b) - Frame Type (3b)
+        uint8_t header_byte;    // Misalignment Correction (2b) - Operating Mode (3b) - Frame Type (3b)
         uint8_t counter;        // Wrapping frame counter [0,255] 
         uint64_t timestamp_ms;  // Timestamp in ms since last power up or reset 
         float w;
@@ -125,7 +125,7 @@ private:
     
     /* Rotation Matrix Frame - 49 bytes decoded */
     struct PACKED oscp_rot_mat_t {
-        uint8_t header_byte;    // Misalignment Correction (2b) - Operating Mode (2b) - Frame Type (3b)
+        uint8_t header_byte;    // Misalignment Correction (2b) - Operating Mode (3b) - Frame Type (3b)
         uint8_t counter;        // Wrapping frame counter [0,255] 
         uint64_t timestamp_ms;  // Timestamp in ms since last power up or reset
         float rm[3][3];
@@ -135,7 +135,7 @@ private:
     
     /* Startup Frame - 40 bytes decoded */
     struct PACKED oscp_startup_t {
-        uint8_t header_byte;        // Misalignment Correction (2b) - Operating Mode (2b) - Frame Type (3b) 
+        uint8_t header_byte;        // Misalignment Correction (2b) - Operating Mode (3b) - Frame Type (3b) 
         char mark_number[10];
         uint16_t unit_number;
         uint8_t sw_major_ver;
@@ -191,7 +191,6 @@ private:
     };
 
     /* Constant variables */
-    static constexpr uint32_t OSCP_BAUD_RATE    = 921600U;
     static constexpr uint8_t OSCP_FRAME_DELIM   = 0x00U;
     static constexpr uint8_t OSCP_FRAME_MAX_LEN = 72U; 
 
@@ -227,6 +226,7 @@ private:
     /* IMU configuration timer */ 
     uint32_t last_frame_ms = 0;         // Last CRC-check frame 
     uint32_t last_status_warn_ms = 0;   // Rate limiter For status byte warning(s)
+    uint32_t last_recovery_ms = 0;
 
     /* Accessors */
     inline oscp_frame_type_t get_frame_type(uint8_t hdr_byte) const {
